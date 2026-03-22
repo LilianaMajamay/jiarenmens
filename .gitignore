@@ -40,3 +40,7 @@ Thumbs.db
 # Logs
 logs/
 *.log
+
+# Data (local storage)
+data/
+*.db

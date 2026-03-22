@@ -1,19 +1,7 @@
 from pathlib import Path
-from datetime import datetime
 
 BASE_DIR = Path(__file__).parent.parent
 DATA_DIR = BASE_DIR / "data"
-
-# 按时间戳存储
-TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
-DATA_BY_DATE = DATA_DIR / TIMESTAMP
-
-PLAYERS_DIR = DATA_BY_DATE / "players"
-POSITIONS_DIR = DATA_BY_DATE / "positions"
-TRADES_DIR = DATA_BY_DATE / "trades"
-
-# 最新的数据链接（软链接）
-LATEST_DIR = DATA_DIR / "latest"
 
 BASE_URL = "https://groupwap.eastmoney.com"
 

@@ -1,21 +1,14 @@
 """
-东方财富实盘选手爬虫 - 基础爬虫类
-
-优化版本：
-- 使用线程安全的 Playwright 管理器
-- 高并发爬取
-- 按时间戳存储
-- 支持断点续传
+东方财富实盘选手爬虫 - 异步基础爬虫类
 """
-import os
-import time
-import requests
+import asyncio
 from typing import Optional
+
 from bs4 import BeautifulSoup
+
 from src.config import HEADERS
 from src.utils.logger import setup_logger
-from src.utils.proxy_pool import get_proxy_pool
-from src.utils.playwright_manager import get_playwright_context
+from src.utils.async_playwright_pool import AsyncPlaywrightPool
 
 logger = setup_logger()
 
@@ -23,152 +16,129 @@ logger = setup_logger()
 MAX_RETRIES = 3
 RETRY_DELAY = 2  # 秒
 
-# 是否启用代理池
-USE_PROXY_POOL = os.environ.get('USE_PROXY_POOL', 'false').lower() == 'true'
 
-# 获取代理池实例
-_proxy_pool = None
+class AsyncBaseSpider:
+    """异步基础爬虫类"""
 
+    def __init__(self, pool: AsyncPlaywrightPool = None, pool_size: int = 5):
+        """
+        初始化异步爬虫
 
-def _get_proxy_pool():
-    """获取代理池"""
-    global _proxy_pool
-    if _proxy_pool is None:
-        _proxy_pool = get_proxy_pool()
-    return _proxy_pool
+        Args:
+            pool: 异步 Playwright 连接池，如果为 None 则创建新的
+            pool_size: 如果创建新池，指定池大小
+        """
+        if pool is None:
+            self._own_pool = True
+            self.pool = AsyncPlaywrightPool(pool_size=pool_size)
+        else:
+            self._own_pool = False
+            self.pool = pool
 
+        self._pool_initialized = False
+        self._session: asyncio.ClientSession = None
 
-class BaseSpider:
-    """基础爬虫类"""
+    async def _ensure_pool(self):
+        """确保池已初始化"""
+        if not self._pool_initialized:
+            await self.pool.initialize()
+            self._pool_initialized = True
 
-    def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update(HEADERS)
-
-    def fetch_page(self, url: str, timeout: int = 30) -> Optional[str]:
-        """使用requests获取页面"""
+    async def fetch_page(self, url: str, timeout: int = 30) -> Optional[str]:
+        """使用 aiohttp 获取页面"""
         try:
-            response = self.session.get(url, timeout=timeout)
-            response.raise_for_status()
-            return response.text
+            import aiohttp
+            async with aiohttp.ClientSession(headers=HEADERS) as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
+                    response.raise_for_status()
+                    return await response.text()
         except Exception as e:
-            logger.warning(f"requests获取失败: {e}, 尝试使用playwright")
+            logger.warning(f"aiohttp 获取失败: {e}")
             return None
 
-    def fetch_page_with_playwright(self, url: str, timeout: int = 30, retries: int = MAX_RETRIES) -> Optional[str]:
-        """使用playwright获取动态页面（带重试和代理）"""
-        proxy_pool = _get_proxy_pool() if USE_PROXY_POOL else None
-        last_proxy = None
+    async def fetch_page_with_playwright(
+        self,
+        url: str,
+        timeout: int = 60,
+        retries: int = MAX_RETRIES
+    ) -> Optional[str]:
+        """使用异步 Playwright 获取动态页面"""
+        await self._ensure_pool()
 
         for attempt in range(retries):
-            proxy_config = None
-
             try:
-                # 获取代理配置
-                if proxy_pool:
-                    proxy = proxy_pool.get()
-                    if proxy:
-                        last_proxy = proxy
-                        proxy_str = proxy.http.replace('http://', '')
-                        proxy_config = {'server': f'http://{proxy_str}'}
-                        logger.debug(f"使用代理: {proxy.http}")
-
-                # 使用线程安全的 Playwright 上下文
-                with get_playwright_context(timeout=timeout, proxy=proxy_config) as (browser, page):
-                    page.goto(url, timeout=timeout * 1000)
-                    page.wait_for_load_state('networkidle', timeout=timeout * 1000)
-                    content = page.content()
-
-                    # 标记代理成功
-                    if last_proxy and proxy_pool:
-                        proxy_pool.mark_success(last_proxy)
-
-                    return content
+                async with self.pool.get_context(timeout) as ctx:
+                    page = await ctx.new_page()
+                    try:
+                        await page.goto(url, wait_until='networkidle', timeout=timeout * 1000)
+                        return await page.content()
+                    finally:
+                        await page.close()
 
             except Exception as e:
-                # 标记代理失败
-                if last_proxy and proxy_pool:
-                    proxy_pool.mark_failed(last_proxy)
-                    last_proxy = None
-
                 if attempt < retries - 1:
-                    logger.warning(f"playwright获取失败 (尝试 {attempt+1}/{retries}): {e}, 重试中...")
-                    time.sleep(RETRY_DELAY)
+                    logger.warning(f"异步 Playwright 获取失败 (尝试 {attempt+1}/{retries}): {e}")
+                    await asyncio.sleep(RETRY_DELAY)
                 else:
-                    logger.error(f"playwright获取失败: {e}")
+                    logger.error(f"异步 Playwright 获取失败: {e}")
                     return None
 
         return None
 
-    def fetch_page_with_scroll(self, url: str, timeout: int = 30, scroll_pause: float = 0.5, max_scrolls: int = 20, retries: int = MAX_RETRIES) -> Optional[str]:
-        """使用playwright获取动态页面并滚动加载更多内容（带重试和代理）"""
-        proxy_pool = _get_proxy_pool() if USE_PROXY_POOL else None
-        last_proxy = None
+    async def fetch_page_with_scroll(
+        self,
+        url: str,
+        timeout: int = 60,
+        scroll_pause: float = 0.5,
+        max_scrolls: int = 20,
+        retries: int = MAX_RETRIES
+    ) -> Optional[str]:
+        """使用异步 Playwright 获取动态页面并滚动加载"""
+        await self._ensure_pool()
 
         for attempt in range(retries):
-            proxy_config = None
-
             try:
-                # 获取代理配置
-                if proxy_pool:
-                    proxy = proxy_pool.get()
-                    if proxy:
-                        last_proxy = proxy
-                        proxy_str = proxy.http.replace('http://', '')
-                        proxy_config = {'server': f'http://{proxy_str}'}
+                async with self.pool.get_context(timeout) as ctx:
+                    page = await ctx.new_page()
+                    try:
+                        await page.goto(url, wait_until='networkidle', timeout=timeout * 1000)
 
-                # 使用线程安全的 Playwright 上下文
-                with get_playwright_context(timeout=timeout, proxy=proxy_config) as (browser, page):
-                    page.goto(url, timeout=timeout * 1000)
-                    page.wait_for_load_state('networkidle', timeout=timeout * 1000)
+                        # 滚动加载
+                        for _ in range(max_scrolls):
+                            await page.evaluate("window.scrollBy(0, 500)")
+                            await asyncio.sleep(scroll_pause)
 
-                    # 滚动页面加载更多数据
-                    for i in range(max_scrolls):
-                        page.evaluate("window.scrollBy(0, 500)")
-                        page.wait_for_timeout(int(scroll_pause * 1000))
+                            # 尝试点击"加载更多"
+                            try:
+                                load_more = page.locator('text=加载更多').first
+                                if await load_more.is_visible():
+                                    await load_more.click()
+                                    await asyncio.sleep(scroll_pause)
+                            except Exception:
+                                pass
 
-                        # 尝试点击"加载更多"按钮
-                        try:
-                            load_more = page.locator('text=加载更多').first
-                            if load_more.is_visible():
-                                load_more.click()
-                                page.wait_for_timeout(int(scroll_pause * 1000))
-                        except Exception:
-                            # 忽略加载更多按钮的错误
-                            pass
-
-                    content = page.content()
-
-                    # 标记代理成功
-                    if last_proxy and proxy_pool:
-                        proxy_pool.mark_success(last_proxy)
-
-                    return content
+                        return await page.content()
+                    finally:
+                        await page.close()
 
             except Exception as e:
-                # 标记代理失败
-                if last_proxy and proxy_pool:
-                    proxy_pool.mark_failed(last_proxy)
-                    last_proxy = None
-
                 if attempt < retries - 1:
-                    logger.warning(f"playwright滚动获取失败 (尝试 {attempt+1}/{retries}): {e}, 重试中...")
-                    time.sleep(RETRY_DELAY)
+                    logger.warning(f"异步滚动获取失败 (尝试 {attempt+1}/{retries}): {e}")
+                    await asyncio.sleep(RETRY_DELAY)
                 else:
-                    logger.error(f"playwright滚动获取失败: {e}")
+                    logger.error(f"异步滚动获取失败: {e}")
                     return None
 
-        return None
-
-    def get_page_content(self, url: str, use_playwright: bool = False) -> Optional[str]:
-        """获取页面内容，优先使用requests，失败则使用playwright"""
-        content = self.fetch_page(url)
-        if content:
-            return content
-        if use_playwright:
-            return self.fetch_page_with_playwright(url)
         return None
 
     def parse_html(self, html: str) -> BeautifulSoup:
         """解析HTML"""
         return BeautifulSoup(html, 'lxml')
+
+    async def close(self):
+        """关闭资源"""
+        if self._session and not self._session.closed:
+            await self._session.close()
+
+        if self._own_pool and self._pool_initialized:
+            await self.pool.close()

@@ -4,7 +4,6 @@ from typing import List, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from src.config import BASE_URL
 from src.utils.logger import setup_logger
-from src.storage.json_storage import JsonStorage
 
 logger = setup_logger()
 
@@ -25,7 +24,6 @@ class PlayerListSpider:
     }
 
     def __init__(self):
-        self.storage = JsonStorage()
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
@@ -97,17 +95,11 @@ class PlayerListSpider:
         return all_ranks
 
     def fetch_player_list(self, max_per_rank: int = 200) -> List[Dict[str, Any]]:
-        """获取所有榜单的选手列表（合并去重），并按榜单分类存储"""
+        """获取所有榜单的选手列表（合并去重）"""
         logger.info(f"开始获取选手列表 (每个榜单前{max_per_rank}名)")
 
         # 获取所有榜单
         all_ranks = self.fetch_all_ranks(max_per_rank)
-
-        # 保存分类榜单
-        for rank_name, players in all_ranks.items():
-            rank_file = rank_name + ".json"
-            self.storage.save_players(players, rank_file)
-            logger.info(f"保存{rank_name}到 {rank_file}")
 
         # 合并去重
         all_players = []
@@ -131,7 +123,6 @@ class PlayerListSpider:
                             break
 
         logger.info(f"去重后共 {len(all_players)} 个选手")
-        self.storage.save_players(all_players)
         return all_players
 
 

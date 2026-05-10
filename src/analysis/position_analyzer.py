@@ -8,6 +8,7 @@
 """
 import json
 from pathlib import Path
+from collections import Counter, defaultdict
 from typing import List, Dict, Any
 
 from src.storage.sqlite_storage import SQLiteStorage
@@ -16,6 +17,7 @@ from src.utils.logger import setup_logger
 
 logger = setup_logger()
 
+# 默认存储
 _default_storage = None
 
 
@@ -33,31 +35,52 @@ class PositionAnalyzer:
     def __init__(self, storage=None):
         self.storage = storage or _get_default_storage()
 
-    def get_all_positions(self, crawl_date: str | None = None) -> List[Dict[str, Any]]:
+    def get_all_positions(self) -> List[Dict[str, Any]]:
         """获取所有选手的持仓数据"""
-        return self.storage.get_all_positions(crawl_date)
+        return self.storage.get_all_positions()
 
-    def get_top_holdings(self, top_n: int = 20, crawl_date: str | None = None) -> List[Dict[str, Any]]:
+    def get_top_holdings(self, top_n: int = 20) -> List[Dict[str, Any]]:
         """获取持仓数量最多的股票"""
-        return self.storage.get_top_holdings(top_n, crawl_date)
+        return self.storage.get_top_holdings(top_n)
 
-    def get_position_distribution(self, crawl_date: str | None = None) -> Dict[str, int]:
+    def get_position_distribution(self) -> Dict[str, Any]:
         """获取选手仓位分布"""
-        return self.storage.get_position_distribution(crawl_date)
+        return self.storage.get_position_distribution()
 
-    def get_sector_distribution(self, crawl_date: str | None = None) -> List[Dict[str, Any]]:
+    def get_sector_distribution(self) -> List[Dict[str, Any]]:
         """获取概念板块分布"""
-        return self.storage.get_sector_distribution(crawl_date)
+        return self.storage.get_sector_distribution()
 
     def get_top_performers(self, top_n: int = 10) -> List[Dict[str, Any]]:
         """获取当日盈利最高的选手"""
         return self.storage.get_top_performers(top_n)
 
     def generate_report(self) -> Dict[str, Any]:
-        """生成完整分析报告（使用最新爬取日期）"""
-        return self.storage.generate_report()
+        """生成完整分析报告"""
+        logger.info("开始生成持仓分析报告...")
 
-    def save_report(self, output_path: str | None = None) -> Dict[str, Any]:
+        player_ids = self.storage.get_all_player_ids()
+        positions = self.storage.get_all_positions()
+        unique_stocks = len(set(p.get('stock_code', '') for p in positions if p.get('stock_code')))
+
+        report = {
+            'summary': {
+                'total_players': len(player_ids),
+                'total_positions': len(positions),
+                'unique_stocks': unique_stocks,
+            },
+            'top_holdings': self.get_top_holdings(20),
+            'position_distribution': self.get_position_distribution(),
+            'profit_distribution': self.get_sector_distribution(),
+            'top_performers': self.get_top_performers(10),
+        }
+
+        logger.info(f"分析完成: {report['summary']['total_players']}选手, "
+                    f"{report['summary']['total_positions']}持仓, "
+                    f"{report['summary']['unique_stocks']}只股票")
+        return report
+
+    def save_report(self, output_path: str = None):
         """保存分析报告"""
         report = self.generate_report()
 
@@ -78,13 +101,11 @@ def analyze_positions():
     analyzer = PositionAnalyzer()
     report = analyzer.generate_report()
 
-    crawl_date = report.get('crawl_date', '未知')
     print("\n" + "=" * 50)
-    print(f"持仓分析报告 ({crawl_date})")
+    print("持仓分析报告")
     print("=" * 50)
     print(f"\n【概览】")
     print(f"  选手总数: {report['summary']['total_players']}")
-    print(f"  持仓记录: {report['summary']['total_positions']}")
     print(f"  涉及股票: {report['summary']['unique_stocks']}只")
 
     print(f"\n【持仓最多的股票 Top 10】")

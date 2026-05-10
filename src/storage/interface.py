@@ -18,8 +18,8 @@ class StorageInterface(ABC):
         pass
 
     @abstractmethod
-    def save_players(self, players: List[Dict[str, Any]]) -> None:
-        """批量保存选手列表"""
+    def save_players(self, players: List[Dict[str, Any]], filename: str = "players.json") -> None:
+        """保存选手列表"""
         pass
 
     @abstractmethod
@@ -28,8 +28,8 @@ class StorageInterface(ABC):
         pass
 
     @abstractmethod
-    def load_players(self) -> List[Dict[str, Any]]:
-        """加载所有选手"""
+    def load_players(self, filename: str = "players.json") -> List[Dict[str, Any]]:
+        """加载选手列表"""
         pass
 
     @abstractmethod
@@ -40,36 +40,36 @@ class StorageInterface(ABC):
     # ---- 持仓数据 ----
 
     @abstractmethod
-    def save_positions(self, zh_id: str, positions: List[Dict[str, Any]], crawl_date: str | None = None) -> None:
+    def save_positions(self, zh_id: str, positions: List[Dict[str, Any]]) -> None:
         """保存持仓数据"""
         pass
 
     @abstractmethod
-    def load_positions(self, zh_id: str, crawl_date: str | None = None) -> List[Dict[str, Any]]:
+    def load_positions(self, zh_id: str) -> List[Dict[str, Any]]:
         """加载持仓数据"""
         pass
 
     # ---- 调仓数据 ----
 
     @abstractmethod
-    def save_trades(self, zh_id: str, trades: List[Dict[str, Any]], crawl_date: str | None = None) -> None:
+    def save_trades(self, zh_id: str, trades: List[Dict[str, Any]]) -> None:
         """保存调仓记录"""
         pass
 
     @abstractmethod
-    def load_trades(self, zh_id: str, crawl_date: str | None = None) -> List[Dict[str, Any]]:
+    def load_trades(self, zh_id: str) -> List[Dict[str, Any]]:
         """加载调仓记录"""
         pass
 
     # ---- 分析查询 ----
 
     @abstractmethod
-    def get_top_holdings(self, top_n: int = 20, crawl_date: str | None = None) -> List[Dict[str, Any]]:
+    def get_top_holdings(self, top_n: int = 20) -> List[Dict[str, Any]]:
         """获取持仓最多的股票"""
         pass
 
     @abstractmethod
-    def get_position_distribution(self, crawl_date: str | None = None) -> Dict[str, int]:
+    def get_position_distribution(self) -> Dict[str, int]:
         """获取选手仓位分布"""
         pass
 
@@ -79,13 +79,8 @@ class StorageInterface(ABC):
         pass
 
     @abstractmethod
-    def get_all_positions(self, crawl_date: str | None = None) -> List[Dict[str, Any]]:
+    def get_all_positions(self) -> List[Dict[str, Any]]:
         """获取所有选手的持仓数据"""
-        pass
-
-    @abstractmethod
-    def get_sector_distribution(self, crawl_date: str | None = None) -> List[Dict[str, Any]]:
-        """获取概念板块分布"""
         pass
 
     # ---- 工具方法 ----

@@ -9,10 +9,11 @@ logger = setup_logger()
 
 
 def parse_position_ratio(position_str: str) -> float:
-    """解析仓位字符串为数值（按匹配长度降序，避免子串误匹配）"""
+    """解析仓位字符串为数值"""
     if not position_str:
         return 0.0
 
+    # 仓位映射
     position_map = {
         "满仓": 100,
         "9成以上": 95,
@@ -24,16 +25,16 @@ def parse_position_ratio(position_str: str) -> float:
         "4成": 40,
         "3成": 30,
         "2成": 20,
-        "1成以下": 5,
         "1成": 10,
+        "1成以下": 5,
         "空仓": 0,
     }
 
-    # 按 key 长度降序匹配，避免 "1成" 误匹配 "1成以下"
-    for key in sorted(position_map.keys(), key=len, reverse=True):
+    for key, value in position_map.items():
         if key in position_str:
-            return position_map[key]
+            return value
 
+    # 尝试提取数字
     match = re.search(r'(\d+)', position_str)
     if match:
         return float(match.group(1))
@@ -42,16 +43,18 @@ def parse_position_ratio(position_str: str) -> float:
 
 
 def infer_trade_direction(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """根据仓位变化推断买入/卖出方向（会修改传入的 dict）"""
+    """根据仓位变化推断买入/卖出方向"""
     if not trades or len(trades) <= 1:
         for trade in trades:
             trade["direction"] = "调仓"
             trade["position_change"] = 0
         return trades
 
+    # 按日期排序（从新到旧）
     sorted_trades = sorted(trades, key=lambda x: x.get("trade_date", ""), reverse=True)
 
-    stock_history: Dict[str, list] = {}
+    # 用于跟踪每只股票的历史仓位
+    stock_history = {}
 
     for trade in sorted_trades:
         stock_code = trade.get("stock_code", "")
@@ -59,10 +62,14 @@ def infer_trade_direction(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
         if stock_code not in stock_history:
             stock_history[stock_code] = []
+
+        history = stock_history[stock_code]
+
+        if not history:
             trade["direction"] = "调仓"
             trade["position_change"] = 0
         else:
-            prev_position = stock_history[stock_code][-1]
+            prev_position = history[-1]
             change = current_position - prev_position
 
             if change > 0:
@@ -73,7 +80,8 @@ def infer_trade_direction(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 trade["direction"] = "持有"
             trade["position_change"] = change
 
-        stock_history[stock_code].append(current_position)
+        history.append(current_position)
+        stock_history[stock_code] = history
 
     return sorted_trades
 
@@ -82,9 +90,12 @@ def parse_trades(soup: BeautifulSoup, zh_id: str) -> List[Dict[str, Any]]:
     """解析调仓记录（通用函数）"""
     trades = []
     page_text = soup.get_text()
+
+    # 清理空白
     page_text = re.sub(r'\s+', ' ', page_text)
 
-    # 匹配调仓记录格式: "2026-03-20 上能电气 300827 1笔 9成以上 44.000元"
+    # 匹配调仓记录格式
+    # 格式: "2026-03-20 上能电气 300827 1笔 9成以上 44.000元"
     pattern = r'(\d{4}-\d{2}-\d{2})\s*([^\s\d]{2,10})\s*(\d{6})\s*(\d+)笔\s*(\S+)\s*([\d.]+)元'
     matches = re.findall(pattern, page_text)
 
@@ -124,6 +135,8 @@ class AsyncTradeSpider(AsyncBaseSpider):
 
         soup = self.parse_html(html)
         trades = parse_trades(soup, zh_id)
+
+        # 推断交易方向
         trades = infer_trade_direction(trades)
         return trades
 

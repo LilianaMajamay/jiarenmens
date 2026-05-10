@@ -191,7 +191,8 @@ class AsyncPlaywrightPool:
         async with self.get_context(timeout) as ctx:
             page = await ctx.new_page()
             try:
-                await page.goto(url, wait_until='networkidle', timeout=timeout * 1000)
+                await page.goto(url, wait_until='domcontentloaded', timeout=timeout * 1000)
+                await page.wait_for_timeout(3000)
                 return await page.content()
             except Exception as e:
                 logger.error(f"获取页面失败 {url}: {e}")
@@ -221,9 +222,10 @@ class AsyncPlaywrightPool:
         async with self.get_context(timeout) as ctx:
             page = await ctx.new_page()
             try:
-                await page.goto(url, wait_until='networkidle', timeout=timeout * 1000)
+                await page.goto(url, wait_until='domcontentloaded', timeout=timeout * 1000)
 
-                # 滚动加载
+                # 等待初始内容加载
+                await page.wait_for_timeout(3000)
                 for i in range(max_scrolls):
                     await page.evaluate("window.scrollBy(0, 500)")
                     await asyncio.sleep(scroll_pause)

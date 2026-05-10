@@ -6,11 +6,11 @@
 
 - **异步并发爬取** - 使用 asyncio + Playwright，单选手内三类数据真正并行
 - **浏览器连接池** - 浏览器实例复用，Context 池化管理，避免频繁创建/销毁开销
-- **反检测机制** - 自定义 UserAgent、viewport、locale、时区，绕过网站反爬限制
+- **反检测机制** - 统一 UserAgent / viewport / locale / 时区 + `add_init_script` 注入隐藏 `webdriver`、伪造 plugins/languages、修补 permissions、伪造 WebGL vendor
+- **精确等待策略** - 抓取时优先等待具体元素或关键文本（如"日收益"/"持仓"/"调仓"），避免 `networkidle` 长时间空转
 - **SQLite 高效存储** - 日期隔离存储，支持按日期分析查询，批量写入优化
 - **断点续传** - Ctrl+C 中断后可继续，自动保存检查点
 - **跨平台兼容** - 支持 Windows 和 Linux（Ubuntu），自动适配 Chromium 启动参数
-- **代理池支持** - 可配置代理避免被封
 
 ## 安装依赖
 
@@ -35,10 +35,9 @@ sudo apt-get install -y fonts-noto-cjk
 ```
 
 主要依赖：
-- `requests` - HTTP 请求
-- `playwright` - 动态页面渲染
-- `beautifulsoup4` - HTML 解析
-- `aiohttp` - 异步 HTTP
+- `requests` - HTTP 请求（仅用于选手列表 API）
+- `playwright` - 动态页面渲染（详情/持仓/调仓）
+- `beautifulsoup4` + `lxml` - HTML 解析
 
 ## 快速开始
 
@@ -108,29 +107,12 @@ python main.py --analyze
 - **股票盈亏分布** - 按盈利区间分类
 - **当日盈利最高的选手 Top 10**
 
-## 使用代理池
-
-在 `proxies.txt` 中添加代理：
-
-```txt
-# proxies.txt
-http://127.0.0.1:7890
-http://user:password@192.168.1.1:8080
-```
-
-启用代理池：
-```bash
-export USE_PROXY_POOL=true
-python main.py
-```
-
 ## 项目结构
 
 ```
 dfcfshipan/
 ├── main.py                      # 入口文件
 ├── requirements.txt             # 依赖列表
-├── proxies.txt                  # 代理列表（可选）
 ├── data/
 │   ├── checkpoint.json         # 爬取检查点
 │   └── crawl_data.db           # SQLite 数据库
@@ -150,7 +132,6 @@ dfcfshipan/
     │   └── position_analyzer.py  # 持仓分析器
     └── utils/                 # 工具模块
         ├── logger.py           # 日志配置
-        ├── proxy_pool.py      # 代理池管理
         └── async_playwright_pool.py  # 异步 Playwright 连接池
 ```
 
@@ -163,7 +144,8 @@ dfcfshipan/
        ↓
 2. 创建 AsyncPlaywrightPool (复用浏览器)
    - Chromium 启动参数: --no-sandbox, --disable-dev-shm-usage 等
-   - Context 反检测配置: Windows Chrome UA, zh-CN locale, Asia/Shanghai 时区
+   - Context 反检测: Windows Chrome UA, zh-CN locale, Asia/Shanghai 时区
+   - add_init_script 注入: 隐藏 webdriver / 伪造 plugins / WebGL 等
        ↓
 3. 对每个选手：
    ┌─────────────────────────────────────┐
@@ -184,7 +166,8 @@ dfcfshipan/
 - 单个 Playwright + Browser 实例启动一次
 - 多个 BrowserContext 组成连接池
 - 使用 Semaphore 控制并发，无需额外锁
-- Context 创建时自动配置反检测参数
+- Context 创建时自动注入反检测脚本（`add_init_script`）
+- Context 失效时自动创建新 Context 替补，保持池容量
 
 ### 断点续传
 
@@ -198,11 +181,11 @@ dfcfshipan/
 ## 注意事项
 
 1. **Ubuntu 用户必须运行 `sudo playwright install-deps chromium`**，否则 Chromium 无法启动
-2. **缺少中文字体**会导致页面 JS 渲染异常，运行 `sudo apt-get install fonts-noto-cjk`
+2. **缺少中文字体**会导致页面 JS 渲染异常，运行 `sudo apt-get install fonts-noto-cjk fonts-noto-cjk-extra`
 3. **并发数建议 10-20**，过高可能被网站限流
 4. **自动重试机制**，失败自动重试 3 次，被反爬拦截时会打印页面片段到日志
 5. **调仓记录需要滚动加载**，爬取较慢
-6. **建议使用代理池**避免被封
+6. **海外云服务器** 抓取国内行情站点常被风控，建议使用国内云或加代理
 
 ## 故障排查
 
@@ -213,11 +196,13 @@ dfcfshipan/
 | 日志内容 | 原因 | 解决方案 |
 |----------|------|---------|
 | `Chromium 浏览器启动成功` 后无后续 | Context 创建或页面获取超时 | 检查网络连接，降低 `--workers` 并发数 |
-| `页面可能被拦截` + 页面片段 | 网站 WAF 反爬 | 使用代理池，降低并发，增加等待时间 |
+| `页面可能被拦截` + 页面片段 | 网站 WAF 反爬 | 降低并发，更换出口 IP，必要时挂代理 |
 | `Unable to connect to browser` | Chromium 系统依赖缺失 | 运行 `sudo playwright install-deps chromium` |
 | `Failed to launch browser` | 缺少运行时库 | 检查 `playwright install chromium` 是否执行 |
 | `未能从页面提取 xxxx` | 网站改版或反爬 | 看日志中页面片段是否包含正常数据 |
 | `timeout: exceeded 60000ms` | 页面加载超时 | 网络较慢时增大 `--workers` 会加剧超时，建议调小 |
+| `等待 '日收益'/'持仓'/'调仓' 超时` 大量出现 | Linux 缺中文字体 / 缺 Chromium 系统库 | 装 `fonts-noto-cjk` + `playwright install-deps chromium` |
+| 选手列表 OK 但每个选手都 "✗ 获取失败" | Linux 缺中文字体 → 页面 JS 渲染异常 → 解析为 0 | 同上 |
 
 ## 榜单 API 映射
 

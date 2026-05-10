@@ -158,6 +158,18 @@ async def crawl_all_data_async(
     pending_positions = []
     pending_trades = []
 
+    def _flush_batch(storage, players_buf, positions_buf, trades_buf, crawl_date):
+        """批量保存数据"""
+        if players_buf:
+            storage.save_players_batch(players_buf)
+            logger.debug(f"批量保存 {len(players_buf)} 个选手")
+        if positions_buf:
+            storage.save_positions_batch(positions_buf, crawl_date)
+            logger.debug(f"批量保存 {len(positions_buf)} 条持仓记录")
+        if trades_buf:
+            storage.save_trades_batch(trades_buf, crawl_date)
+            logger.debug(f"批量保存 {len(trades_buf)} 条调仓记录")
+
     try:
         # 信号处理
         loop = asyncio.get_event_loop()
@@ -187,29 +199,11 @@ async def crawl_all_data_async(
             name = player.get('name', '')
 
             async with semaphore:
-                if interrupted:
+                if interrupted or zh_id in completed_ids:
+                    # 已完成的跳过；调用方根据 detail/completed_ids 区分 skip vs fail
                     return (zh_id, name, None, [], [])
 
-                # 跳过已完成的
-                if zh_id in completed_ids:
-                    player_data = storage.load_player(zh_id) if hasattr(storage, 'load_player') else None
-                    positions = storage.load_positions(zh_id) if hasattr(storage, 'load_positions') else []
-                    trades = storage.load_trades(zh_id) if hasattr(storage, 'load_trades') else []
-                    return (zh_id, name, player_data, positions, trades)
-
                 return await crawl_player_data_async(zh_id, name, pool, skip_existing)
-
-        def _flush_batch(storage, players_buf, positions_buf, trades_buf, crawl_date):
-            """批量保存数据"""
-            if players_buf:
-                storage.save_players_batch(players_buf)
-                logger.debug(f"批量保存 {len(players_buf)} 个选手")
-            if positions_buf:
-                storage.save_positions_batch(positions_buf, crawl_date)
-                logger.debug(f"批量保存 {len(positions_buf)} 条持仓记录")
-            if trades_buf:
-                storage.save_trades_batch(trades_buf, crawl_date)
-                logger.debug(f"批量保存 {len(trades_buf)} 条调仓记录")
 
         # 创建所有任务
         tasks = [crawl_with_semaphore(p) for p in players]
@@ -345,6 +339,8 @@ def main():
         ))
     except KeyboardInterrupt:
         logger.info("爬取被用户中断")
+    except Exception as e:
+        logger.exception(f"爬取过程出现未处理异常: {e}")
 
 
 if __name__ == "__main__":

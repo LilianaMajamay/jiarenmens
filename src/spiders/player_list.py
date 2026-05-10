@@ -1,6 +1,6 @@
 import requests
 from typing import List, Dict, Any
-from src.config import BASE_URL
+from src.config import BASE_URL, USER_AGENT
 from src.utils.logger import setup_logger
 
 logger = setup_logger()
@@ -23,7 +23,7 @@ class PlayerListSpider:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            "User-Agent": USER_AGENT,
             "Referer": BASE_URL,
         })
 

@@ -2,12 +2,12 @@
 东方财富实盘选手爬虫 - 异步基础爬虫类
 """
 import asyncio
-import aiohttp
+import json as _json
 from typing import Optional
 
 from bs4 import BeautifulSoup
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-from src.config import HEADERS
 from src.utils.logger import setup_logger
 from src.utils.async_playwright_pool import AsyncPlaywrightPool
 
@@ -17,6 +17,41 @@ logger = setup_logger()
 MAX_RETRIES = 3
 RETRY_DELAY = 2  # 秒
 
+# 等待目标渲染的超时（毫秒）
+WAIT_TARGET_TIMEOUT_MS = 15000
+
+
+async def _wait_for_target(
+    page,
+    wait_for_selector: Optional[str],
+    wait_for_text: Optional[str],
+) -> None:
+    """优先等待具体选择器/文本出现；都没指定则用较短的 networkidle 兜底。
+
+    任何等待失败只记录警告并继续返回当前页面，避免整体失败。
+    """
+    try:
+        if wait_for_selector:
+            await page.wait_for_selector(
+                wait_for_selector,
+                timeout=WAIT_TARGET_TIMEOUT_MS,
+                state='attached',
+            )
+            return
+        if wait_for_text:
+            expr = (
+                "document.body && document.body.innerText.includes("
+                + _json.dumps(wait_for_text)
+                + ")"
+            )
+            await page.wait_for_function(expr, timeout=WAIT_TARGET_TIMEOUT_MS)
+            return
+        # 兜底：等到没有进行中的网络请求；超时不致命
+        await page.wait_for_load_state('networkidle', timeout=5000)
+    except PlaywrightTimeoutError as e:
+        target = wait_for_selector or wait_for_text or 'networkidle'
+        logger.warning(f"等待 {target!r} 超时，继续解析当前页面: {e}")
+
 
 class AsyncBaseSpider:
     """异步基础爬虫类"""
@@ -25,12 +60,12 @@ class AsyncBaseSpider:
         if pool is None:
             self._own_pool = True
             self.pool = AsyncPlaywrightPool(pool_size=pool_size)
+            self._pool_initialized = False
         else:
             self._own_pool = False
             self.pool = pool
-
-        self._pool_initialized = False
-        self._session: aiohttp.ClientSession | None = None
+            # 复用外部 pool 时假定其已初始化（由调用方保证）
+            self._pool_initialized = True
 
     async def _ensure_pool(self):
         """确保池已初始化"""
@@ -38,29 +73,21 @@ class AsyncBaseSpider:
             await self.pool.initialize()
             self._pool_initialized = True
 
-    async def _ensure_session(self):
-        """确保 aiohttp session 已创建（复用连接）"""
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(headers=HEADERS)
-
-    async def fetch_page(self, url: str, timeout: int = 30) -> Optional[str]:
-        """使用 aiohttp 获取页面（复用 session）"""
-        try:
-            await self._ensure_session()
-            async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
-                response.raise_for_status()
-                return await response.text()
-        except Exception as e:
-            logger.warning(f"aiohttp 获取失败: {e}")
-            return None
-
     async def fetch_page_with_playwright(
         self,
         url: str,
         timeout: int = 60,
-        retries: int = MAX_RETRIES
+        retries: int = MAX_RETRIES,
+        wait_for_selector: Optional[str] = None,
+        wait_for_text: Optional[str] = None,
     ) -> Optional[str]:
-        """使用异步 Playwright 获取动态页面"""
+        """使用异步 Playwright 获取动态页面
+
+        Args:
+            wait_for_selector: 等待具体 CSS 选择器出现（最优）
+            wait_for_text: 等待 body innerText 包含某文本（次选）
+            两者都未指定时使用 networkidle 兜底
+        """
         await self._ensure_pool()
 
         for attempt in range(retries):
@@ -69,9 +96,7 @@ class AsyncBaseSpider:
                     page = await ctx.new_page()
                     try:
                         await page.goto(url, wait_until='domcontentloaded', timeout=timeout * 1000)
-                        # 等待网络空闲，确保 JS 渲染完成
-                        await page.wait_for_load_state('networkidle', timeout=15000)
-                        await page.wait_for_timeout(5000)
+                        await _wait_for_target(page, wait_for_selector, wait_for_text)
 
                         content = await page.content()
 
@@ -103,9 +128,11 @@ class AsyncBaseSpider:
         timeout: int = 60,
         scroll_pause: float = 1.0,
         max_scrolls: int = 20,
-        retries: int = MAX_RETRIES
+        retries: int = MAX_RETRIES,
+        wait_for_selector: Optional[str] = None,
+        wait_for_text: Optional[str] = None,
     ) -> Optional[str]:
-        """使用异步 Playwright 获取动态页面并滚动加载"""
+        """使用异步 Playwright 获取动态页面并滚动加载（参数同上）"""
         await self._ensure_pool()
 
         for attempt in range(retries):
@@ -114,8 +141,7 @@ class AsyncBaseSpider:
                     page = await ctx.new_page()
                     try:
                         await page.goto(url, wait_until='domcontentloaded', timeout=timeout * 1000)
-                        await page.wait_for_load_state('networkidle', timeout=15000)
-                        await page.wait_for_timeout(3000)
+                        await _wait_for_target(page, wait_for_selector, wait_for_text)
 
                         for _ in range(max_scrolls):
                             await page.evaluate("window.scrollBy(0, 500)")
@@ -149,8 +175,5 @@ class AsyncBaseSpider:
 
     async def close(self):
         """关闭资源"""
-        if self._session and not self._session.closed:
-            await self._session.close()
-
         if self._own_pool and self._pool_initialized:
             await self.pool.close()

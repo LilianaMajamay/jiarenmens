@@ -13,6 +13,7 @@ from typing import Optional, Generator
 
 from playwright.async_api import async_playwright, Playwright, Browser, BrowserContext, Page
 
+from src.config import USER_AGENT
 from src.utils.logger import setup_logger
 
 logger = setup_logger()
@@ -64,19 +65,57 @@ class AsyncPlaywrightPool:
 
         self._initialized = False
 
+    # 反检测脚本：在每个新 page 加载前注入，覆盖常见的自动化标志
+    _STEALTH_SCRIPT = """
+    // hide webdriver flag
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+    // fake plugins length
+    Object.defineProperty(navigator, 'plugins', {
+        get: () => [1, 2, 3, 4, 5]
+    });
+
+    // fake languages
+    Object.defineProperty(navigator, 'languages', {
+        get: () => ['zh-CN', 'zh', 'en']
+    });
+
+    // ensure window.chrome exists
+    if (!window.chrome) {
+        window.chrome = { runtime: {} };
+    }
+
+    // patch permissions.query for notifications
+    const __origQuery = window.navigator.permissions && window.navigator.permissions.query;
+    if (__origQuery) {
+        window.navigator.permissions.query = (parameters) => (
+            parameters && parameters.name === 'notifications'
+                ? Promise.resolve({ state: Notification.permission })
+                : __origQuery(parameters)
+        );
+    }
+
+    // spoof WebGL vendor / renderer
+    const __getParameter = WebGLRenderingContext.prototype.getParameter;
+    WebGLRenderingContext.prototype.getParameter = function(parameter) {
+        if (parameter === 37445) return 'Intel Inc.';
+        if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+        return __getParameter.call(this, parameter);
+    };
+    """
+
     async def _create_context(self) -> BrowserContext:
         """创建带反检测配置的 BrowserContext"""
-        return await self.browser.new_context(
+        ctx = await self.browser.new_context(
             viewport={'width': 1920, 'height': 1080},
-            user_agent=(
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                'AppleWebKit/537.36 (KHTML, like Gecko) '
-                'Chrome/120.0.0.0 Safari/537.36'
-            ),
+            user_agent=USER_AGENT,
             locale='zh-CN',
             timezone_id='Asia/Shanghai',
             has_touch=False,
         )
+        # 注入反检测脚本（每个新 page 加载前自动执行）
+        await ctx.add_init_script(self._STEALTH_SCRIPT)
+        return ctx
 
     async def initialize(self):
         """初始化 Playwright 和 Browser，创建 Context 池"""
@@ -151,37 +190,35 @@ class AsyncPlaywrightPool:
         """
         将 Context 返回池中
 
-        如果 Context 已失效（浏览器断开），则创建一个新的替换
-
-        Args:
-            ctx: 要释放的 Context
+        - 仅当 ctx 是本池借出去的才释放 semaphore，避免计数溢出
+        - 原 ctx 失效时，尝试创建一个新的替换以保持池容量；
+          替换失败则池容量减少（acquire 仍能用，但并发上限下降）
         """
         if ctx not in self._used_contexts:
-            self._semaphore.release()
+            logger.warning("release 收到未在使用集合中的 ctx，忽略")
             return
 
         self._used_contexts.remove(ctx)
 
-        # 检查 Context 是否还有效
         try:
-            # 尝试访问 pages 属性来判断是否断开
-            if ctx.pages:
+            # 1) 优先将原 ctx 放回池
+            try:
+                _ = ctx.pages  # 触发可能的失效检查
                 await self._context_pool.put(ctx)
                 logger.debug("Context 释放回池")
-                self._semaphore.release()
                 return
-        except Exception as e:
-            logger.warning(f"Context 已失效: {e}")
+            except Exception as e:
+                logger.warning(f"Context 已失效: {e}")
 
-        # Context 无效，创建新的替换（使用相同反检测配置）
-        try:
-            new_ctx = await self._create_context()
-            await self._context_pool.put(new_ctx)
-            logger.debug("Context 已替换")
-        except Exception as e:
-            logger.error(f"创建新 Context 失败: {e}")
-
-        self._semaphore.release()
+            # 2) 原 ctx 不可用，创建一个新的替换
+            try:
+                new_ctx = await self._create_context()
+                await self._context_pool.put(new_ctx)
+                logger.debug("Context 已替换")
+            except Exception as e:
+                logger.error(f"创建新 Context 失败，池容量将减少 1: {e}")
+        finally:
+            self._semaphore.release()
 
     @asynccontextmanager
     async def get_context(self, timeout: float = 60) -> Generator[BrowserContext, None, None]:

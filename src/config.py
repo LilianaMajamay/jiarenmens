@@ -10,7 +10,13 @@ PLAYER_INFO_URL = f"{BASE_URL}/group/reality/info.html"
 POSITION_URL = f"{BASE_URL}/group/reality/detail.html"
 TRADE_URL = f"{BASE_URL}/group/reality/change.html"
 
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
+
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "User-Agent": USER_AGENT,
     "Referer": BASE_URL,
 }

@@ -42,29 +42,30 @@ def parse_position_ratio(position_str: str) -> float:
 
 
 def infer_trade_direction(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """根据仓位变化推断买入/卖出方向（会修改传入的 dict）"""
+    """根据仓位变化推断买入/卖出方向（会修改传入的 dict）
+
+    按时间正序遍历，用每只股票"上一次"仓位与本次比较，
+    再按倒序返回（最新在前）以符合调用方期望。
+    """
     if not trades or len(trades) <= 1:
         for trade in trades:
             trade["direction"] = "调仓"
             trade["position_change"] = 0
         return trades
 
-    sorted_trades = sorted(trades, key=lambda x: x.get("trade_date", ""), reverse=True)
+    asc_trades = sorted(trades, key=lambda x: x.get("trade_date", ""))
 
-    stock_history: Dict[str, list] = {}
+    last_position: Dict[str, float] = {}
 
-    for trade in sorted_trades:
+    for trade in asc_trades:
         stock_code = trade.get("stock_code", "")
         current_position = parse_position_ratio(trade.get("position_ratio", ""))
 
-        if stock_code not in stock_history:
-            stock_history[stock_code] = []
+        if stock_code not in last_position:
             trade["direction"] = "调仓"
             trade["position_change"] = 0
         else:
-            prev_position = stock_history[stock_code][-1]
-            change = current_position - prev_position
-
+            change = current_position - last_position[stock_code]
             if change > 0:
                 trade["direction"] = "买入"
             elif change < 0:
@@ -73,9 +74,9 @@ def infer_trade_direction(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 trade["direction"] = "持有"
             trade["position_change"] = change
 
-        stock_history[stock_code].append(current_position)
+        last_position[stock_code] = current_position
 
-    return sorted_trades
+    return sorted(asc_trades, key=lambda x: x.get("trade_date", ""), reverse=True)
 
 
 def parse_trades(soup: BeautifulSoup, zh_id: str) -> List[Dict[str, Any]]:
@@ -117,7 +118,10 @@ class AsyncTradeSpider(AsyncBaseSpider):
         url = f"{TRADE_URL}?zh={zh_id}&uid={uid}"
         logger.debug(f"[异步] 获取选手调仓记录: {zh_id}")
 
-        html = await self.fetch_page_with_scroll(url, timeout=60, scroll_pause=0.5, max_scrolls=20)
+        html = await self.fetch_page_with_scroll(
+            url, timeout=60, scroll_pause=0.5, max_scrolls=20,
+            wait_for_text="调仓",
+        )
         if not html:
             logger.error(f"[异步] 获取选手 {zh_id} 调仓记录失败")
             return []

@@ -103,7 +103,9 @@ class AsyncPlayerDetailSpider(AsyncBaseSpider):
         url = f"{PLAYER_INFO_URL}?zh={zh_id}"
         logger.debug(f"[异步] 获取选手详情: {zh_id}")
 
-        html = await self.fetch_page_with_playwright(url, timeout=60)
+        html = await self.fetch_page_with_playwright(
+            url, timeout=60, wait_for_text="日收益"
+        )
         if not html:
             logger.error(f"[异步] 获取选手 {zh_id} 详情失败")
             return None

@@ -13,17 +13,8 @@ from src.utils.logger import setup_logger
 logger = setup_logger()
 
 
-def create_storage(storage_type: str = None, db_path: Path = None) -> StorageInterface:
-    """
-    创建存储实例
-
-    Args:
-        storage_type: 存储类型（仅支持 'sqlite'）
-        db_path: SQLite 数据库路径
-
-    Returns:
-        SQLiteStorage 实例
-    """
+def create_storage(db_path: Path = None) -> StorageInterface:
+    """创建 SQLite 存储实例"""
     return SQLiteStorage(db_path=db_path)
 
 

@@ -70,7 +70,9 @@ class AsyncPositionSpider(AsyncBaseSpider):
         url = f"{POSITION_URL}?zh={zh_id}&uid={uid}"
         logger.debug(f"[异步] 获取选手持仓: {zh_id}")
 
-        html = await self.fetch_page_with_playwright(url, timeout=60)
+        html = await self.fetch_page_with_playwright(
+            url, timeout=60, wait_for_text="持仓"
+        )
         if not html:
             logger.error(f"[异步] 获取选手 {zh_id} 持仓失败")
             return []

@@ -69,8 +69,21 @@ class AsyncBaseSpider:
                     page = await ctx.new_page()
                     try:
                         await page.goto(url, wait_until='domcontentloaded', timeout=timeout * 1000)
-                        await page.wait_for_timeout(3000)
-                        return await page.content()
+                        # 等待网络空闲，确保 JS 渲染完成
+                        await page.wait_for_load_state('networkidle', timeout=15000)
+                        await page.wait_for_timeout(5000)
+
+                        content = await page.content()
+
+                        # 检查页面是否被反爬拦截（打印前200字符用于诊断）
+                        page_lower = content.lower()
+                        if any(kw in page_lower for kw in ('验证', 'captcha', 'blocked', 'access denied', '404')):
+                            snippet = content[:200].replace('\n', ' ').strip()
+                            logger.warning(f"页面可能被拦截 (url={url}, 片段={snippet})")
+                            if attempt < retries - 1:
+                                continue
+
+                        return content
                     finally:
                         await page.close()
 
@@ -88,7 +101,7 @@ class AsyncBaseSpider:
         self,
         url: str,
         timeout: int = 60,
-        scroll_pause: float = 0.5,
+        scroll_pause: float = 1.0,
         max_scrolls: int = 20,
         retries: int = MAX_RETRIES
     ) -> Optional[str]:
@@ -101,6 +114,7 @@ class AsyncBaseSpider:
                     page = await ctx.new_page()
                     try:
                         await page.goto(url, wait_until='domcontentloaded', timeout=timeout * 1000)
+                        await page.wait_for_load_state('networkidle', timeout=15000)
                         await page.wait_for_timeout(3000)
 
                         for _ in range(max_scrolls):

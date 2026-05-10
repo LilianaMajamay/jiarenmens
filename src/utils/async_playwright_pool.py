@@ -64,6 +64,20 @@ class AsyncPlaywrightPool:
 
         self._initialized = False
 
+    async def _create_context(self) -> BrowserContext:
+        """创建带反检测配置的 BrowserContext"""
+        return await self.browser.new_context(
+            viewport={'width': 1920, 'height': 1080},
+            user_agent=(
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) '
+                'Chrome/120.0.0.0 Safari/537.36'
+            ),
+            locale='zh-CN',
+            timezone_id='Asia/Shanghai',
+            has_touch=False,
+        )
+
     async def initialize(self):
         """初始化 Playwright 和 Browser，创建 Context 池"""
         if self._initialized:
@@ -76,16 +90,24 @@ class AsyncPlaywrightPool:
         self.playwright = await async_playwright().start()
         logger.debug("Playwright 启动成功")
 
-        # 启动 Chromium
+        # 启动 Chromium（Linux 需要 --no-sandbox）
         self.browser = await self.playwright.chromium.launch(
-            headless=self.headless
+            headless=self.headless,
+            args=[
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--disable-web-security',
+                '--disable-features=IsolateOrigins,site-per-process',
+            ]
         )
         logger.debug("Chromium 浏览器启动成功")
 
-        # 创建 Context 池
+        # 创建 Context 池（带反检测配置）
         self._context_pool = asyncio.Queue()
         for i in range(self.pool_size):
-            ctx = await self.browser.new_context()
+            ctx = await self._create_context()
             await self._context_pool.put(ctx)
             logger.debug(f"Context {i+1}/{self.pool_size} 创建成功")
 
@@ -151,9 +173,9 @@ class AsyncPlaywrightPool:
         except Exception as e:
             logger.warning(f"Context 已失效: {e}")
 
-        # Context 无效，创建新的替换
+        # Context 无效，创建新的替换（使用相同反检测配置）
         try:
-            new_ctx = await self.browser.new_context()
+            new_ctx = await self._create_context()
             await self._context_pool.put(new_ctx)
             logger.debug("Context 已替换")
         except Exception as e:
@@ -192,7 +214,8 @@ class AsyncPlaywrightPool:
             page = await ctx.new_page()
             try:
                 await page.goto(url, wait_until='domcontentloaded', timeout=timeout * 1000)
-                await page.wait_for_timeout(3000)
+                await page.wait_for_load_state('networkidle', timeout=15000)
+                await page.wait_for_timeout(5000)
                 return await page.content()
             except Exception as e:
                 logger.error(f"获取页面失败 {url}: {e}")
@@ -204,7 +227,7 @@ class AsyncPlaywrightPool:
         self,
         url: str,
         timeout: int = 60,
-        scroll_pause: float = 0.5,
+        scroll_pause: float = 1.0,
         max_scrolls: int = 20
     ) -> Optional[str]:
         """
@@ -223,14 +246,13 @@ class AsyncPlaywrightPool:
             page = await ctx.new_page()
             try:
                 await page.goto(url, wait_until='domcontentloaded', timeout=timeout * 1000)
-
-                # 等待初始内容加载
+                await page.wait_for_load_state('networkidle', timeout=15000)
                 await page.wait_for_timeout(3000)
+
                 for i in range(max_scrolls):
                     await page.evaluate("window.scrollBy(0, 500)")
                     await asyncio.sleep(scroll_pause)
 
-                    # 尝试点击"加载更多"按钮
                     try:
                         load_more = page.locator('text=加载更多').first
                         if await load_more.is_visible():

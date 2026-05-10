@@ -65,8 +65,9 @@ class AsyncPlaywrightPool:
 
         self._initialized = False
 
-    # 反检测脚本：与 iPhone Mobile Safari UA 保持一致
-    # 不伪造 plugins / window.chrome / WebGL Intel，否则与 Safari 真实环境矛盾
+    # 反检测 + 伪造东方财富 APP webview 桥接对象
+    # 站点 JS 检测 window.emh5 / window.EMProjJs / window.EMRead 是否存在来判定"在 APP 内"
+    # 我们注入空壳对象，并把可能被调用的方法 stub 成无害实现
     _STEALTH_SCRIPT = """
     // hide webdriver flag
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -76,7 +77,7 @@ class AsyncPlaywrightPool:
         get: () => ['zh-CN', 'zh', 'en']
     });
 
-    // patch permissions.query for notifications (一些站点会用它探测自动化)
+    // patch permissions.query for notifications
     const __origQuery = window.navigator.permissions && window.navigator.permissions.query;
     if (__origQuery) {
         window.navigator.permissions.query = (parameters) => (
@@ -85,6 +86,23 @@ class AsyncPlaywrightPool:
                 : __origQuery(parameters)
         );
     }
+
+    // 伪造 EMRead webview 桥接对象，避免站点判定"非 APP"弹 confirm
+    function __mkBridge() {
+        const noop = function() {};
+        const stub = function() { return ''; };
+        return new Proxy({}, {
+            get: (t, k) => {
+                if (k === 'toJSON' || k === Symbol.toPrimitive) return undefined;
+                return t[k] || stub;
+            },
+            set: (t, k, v) => { t[k] = v; return true; }
+        });
+    }
+    if (!window.emh5) window.emh5 = __mkBridge();
+    if (!window.EMProjJs) window.EMProjJs = __mkBridge();
+    if (!window.EMRead) window.EMRead = __mkBridge();
+    if (!window.emjs) window.emjs = __mkBridge();
     """
 
     async def _create_context(self) -> BrowserContext:

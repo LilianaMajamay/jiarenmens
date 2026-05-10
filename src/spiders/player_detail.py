@@ -7,12 +7,48 @@ from src.utils.logger import setup_logger
 
 logger = setup_logger()
 
+PARSED_FIELDS = {
+    'name': '选手名称',
+    'followers': '关注人数',
+    'total_return': '总收益率',
+    'daily_return': '日收益率',
+    'net_value': '净值',
+    'max_drawdown': '最大回撤',
+    'win_rate': '胜率',
+    'days': '运行天数',
+}
+
+
+def safe_extract_float(pattern: str, text: str, field_name: str, default: float = 0.0) -> float:
+    """安全提取浮点数，提取失败时记录警告"""
+    match = re.search(pattern, text)
+    if not match:
+        logger.warning(f"未能从页面提取 {field_name} (pattern: {pattern})")
+        return default
+    try:
+        return float(match.group(1))
+    except (ValueError, IndexError) as e:
+        logger.warning(f"解析 {field_name} 失败: {e}")
+        return default
+
+
+def safe_extract_int(pattern: str, text: str, field_name: str, default: int = 0) -> int:
+    """安全提取整数，提取失败时记录警告"""
+    match = re.search(pattern, text)
+    if not match:
+        logger.warning(f"未能从页面提取 {field_name} (pattern: {pattern})")
+        return default
+    try:
+        return int(match.group(1))
+    except (ValueError, IndexError) as e:
+        logger.warning(f"解析 {field_name} 失败: {e}")
+        return default
+
 
 def parse_player_detail(soup: BeautifulSoup, zh_id: str) -> Dict[str, Any]:
     """解析选手详情（通用函数）"""
     player = {'zh_id': zh_id}
 
-    # 获取所有文本内容进行匹配
     page_text = soup.get_text()
     page_text = re.sub(r'\s+', ' ', page_text)
 
@@ -22,35 +58,31 @@ def parse_player_detail(soup: BeautifulSoup, zh_id: str) -> Dict[str, Any]:
         name_match = re.search(r'管理人[：:]\s*([^\s]+)', page_text)
     player['name'] = name_match.group(1).strip() if name_match else ''
 
-    # 提取关注人数 - 格式: "5人关注"
-    followers_match = re.search(r'(\d+)\s*人关注', page_text)
-    player['followers'] = int(followers_match.group(1)) if followers_match else 0
+    # 使用安全提取函数
+    player['followers'] = safe_extract_int(r'(\d+)\s*人关注', page_text, 'followers')
 
-    # 提取总收益率 - 格式: "总收益 5人关注 -27.23 %"
-    total_return_match = re.search(r'总收益\s*(\d+人关注\s*)?(-?\d+\.\d+)\s*%', page_text)
-    player['total_return'] = float(total_return_match.group(2)) if total_return_match else 0.0
+    # 总收益率 - 格式: "总收益 5人关注 -27.23 %"
+    player['total_return'] = safe_extract_float(
+        r'总收益\s*(?:\d+人关注\s*)?(-?\d+\.\d+)\s*%', page_text, 'total_return')
 
-    # 提取日收益率 - 格式: "日收益 22.21%"
-    daily_return_match = re.search(r'日收益\s*([-\d.]+)%', page_text)
-    if not daily_return_match:
-        daily_return_match = re.search(r'日收益\s*([-\d.]+)', page_text)
-    player['daily_return'] = float(daily_return_match.group(1)) if daily_return_match else 0.0
+    # 日收益率 - 格式: "日收益 22.21%"
+    player['daily_return'] = safe_extract_float(
+        r'日收益\s*([-\d.]+)%', page_text, 'daily_return')
 
-    # 提取净值 - 格式: "已运行 0.728 50.44%"
-    net_value_match = re.search(r'已运行\s*([\d.]+)', page_text)
-    player['net_value'] = float(net_value_match.group(1)) if net_value_match else 0.0
+    # 净值 - 格式: "已运行 0.728"
+    player['net_value'] = safe_extract_float(
+        r'已运行\s*([\d.]+)', page_text, 'net_value')
 
-    # 提取最大回撤 - 格式: "50.44%"
-    max_drawdown_match = re.search(r'已运行\s*[\d.]+\s*([-\d.]+)%', page_text)
-    player['max_drawdown'] = float(max_drawdown_match.group(1)) if max_drawdown_match else 0.0
+    # 最大回撤 - 格式: "已运行 0.728 50.44%"
+    player['max_drawdown'] = safe_extract_float(
+        r'已运行\s*[\d.]+\s*([-\d.]+)%', page_text, 'max_drawdown')
 
-    # 提取胜率 - 格式: "45.83%"
-    win_rate_match = re.search(r'已运行\s*[\d.]+\s*[\d.]+%\s*([-\d.]+)%', page_text)
-    player['win_rate'] = float(win_rate_match.group(1)) if win_rate_match else 0.0
+    # 胜率 - 格式: "已运行 0.728 50.44% 45.83%"
+    player['win_rate'] = safe_extract_float(
+        r'已运行\s*[\d.]+\s*[\d.]+%\s*([-\d.]+)%', page_text, 'win_rate')
 
-    # 提取运行天数 - 格式: "138天"
-    days_match = re.search(r'(\d+)\s*天', page_text)
-    player['days'] = int(days_match.group(1)) if days_match else 0
+    # 运行天数 - 格式: "138天"
+    player['days'] = safe_extract_int(r'(\d+)\s*天', page_text, 'days')
 
     # 提取概念标签
     concept_match = re.search(r'(光伏概念|新能源|医药|科技|消费|金融|军工|芯片|人工智能|新能源汽车)', page_text)

@@ -2,6 +2,7 @@
 东方财富实盘选手爬虫 - 异步基础爬虫类
 """
 import asyncio
+import aiohttp
 from typing import Optional
 
 from bs4 import BeautifulSoup
@@ -21,13 +22,6 @@ class AsyncBaseSpider:
     """异步基础爬虫类"""
 
     def __init__(self, pool: AsyncPlaywrightPool = None, pool_size: int = 5):
-        """
-        初始化异步爬虫
-
-        Args:
-            pool: 异步 Playwright 连接池，如果为 None 则创建新的
-            pool_size: 如果创建新池，指定池大小
-        """
         if pool is None:
             self._own_pool = True
             self.pool = AsyncPlaywrightPool(pool_size=pool_size)
@@ -36,7 +30,7 @@ class AsyncBaseSpider:
             self.pool = pool
 
         self._pool_initialized = False
-        self._session: asyncio.ClientSession = None
+        self._session: aiohttp.ClientSession | None = None
 
     async def _ensure_pool(self):
         """确保池已初始化"""
@@ -44,14 +38,18 @@ class AsyncBaseSpider:
             await self.pool.initialize()
             self._pool_initialized = True
 
+    async def _ensure_session(self):
+        """确保 aiohttp session 已创建（复用连接）"""
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(headers=HEADERS)
+
     async def fetch_page(self, url: str, timeout: int = 30) -> Optional[str]:
-        """使用 aiohttp 获取页面"""
+        """使用 aiohttp 获取页面（复用 session）"""
         try:
-            import aiohttp
-            async with aiohttp.ClientSession(headers=HEADERS) as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
-                    response.raise_for_status()
-                    return await response.text()
+            await self._ensure_session()
+            async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
+                response.raise_for_status()
+                return await response.text()
         except Exception as e:
             logger.warning(f"aiohttp 获取失败: {e}")
             return None
@@ -71,7 +69,6 @@ class AsyncBaseSpider:
                     page = await ctx.new_page()
                     try:
                         await page.goto(url, wait_until='domcontentloaded', timeout=timeout * 1000)
-                        # 等待页面主要内容加载
                         await page.wait_for_timeout(3000)
                         return await page.content()
                     finally:
@@ -104,16 +101,12 @@ class AsyncBaseSpider:
                     page = await ctx.new_page()
                     try:
                         await page.goto(url, wait_until='domcontentloaded', timeout=timeout * 1000)
-
-                        # 等待初始内容加载
                         await page.wait_for_timeout(3000)
 
-                        # 滚动加载
                         for _ in range(max_scrolls):
                             await page.evaluate("window.scrollBy(0, 500)")
                             await asyncio.sleep(scroll_pause)
 
-                            # 尝试点击"加载更多"
                             try:
                                 load_more = page.locator('text=加载更多').first
                                 if await load_more.is_visible():

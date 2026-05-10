@@ -177,14 +177,19 @@ class ProxyPool:
             return False
 
     def check_all(self, test_url: str = 'https://www.baidu.com', timeout: int = 5) -> int:
-        """验证所有代理，返回可用数量"""
+        """验证所有代理（并发），返回可用数量"""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         working = []
-        for proxy in self.proxies:
-            if self.check_proxy(proxy, test_url, timeout):
-                working.append(proxy)
-                logger.info(f"代理可用: {proxy.http}")
-            else:
-                logger.warning(f"代理不可用: {proxy.http}")
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            future_map = {executor.submit(self.check_proxy, p, test_url, timeout): p for p in self.proxies}
+            for future in as_completed(future_map):
+                proxy = future_map[future]
+                if future.result():
+                    working.append(proxy)
+                    logger.info(f"代理可用: {proxy.http}")
+                else:
+                    logger.warning(f"代理不可用: {proxy.http}")
 
         self.working_proxies = working
         return len(working)

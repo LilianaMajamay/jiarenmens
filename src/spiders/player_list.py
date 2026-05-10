@@ -1,7 +1,5 @@
 import requests
-import json
 from typing import List, Dict, Any
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from src.config import BASE_URL
 from src.utils.logger import setup_logger
 
@@ -14,7 +12,6 @@ class PlayerListSpider:
     API_URL = "https://emdcspzhapi.dfcfs.cn/rtV1"
 
     # 榜单类型 (根据Playwright跟踪网站API调用结果修正)
-    # 实际映射：网站标签 -> rankType -> rateTitle
     RANK_TYPES = {
         "10004": "总榜",   # 总收益
         "10003": "年榜",   # 250日收益
@@ -37,7 +34,6 @@ class PlayerListSpider:
         page_size = 20
 
         while offset < max_count:
-            # 本次请求的数量（不超过剩余需要获取的数量）
             request_size = min(page_size, max_count - offset)
 
             params = {
@@ -79,7 +75,6 @@ class PlayerListSpider:
                 logger.error(f"获取榜单 {rank_type} 失败: {e}")
                 break
 
-        # 确保不超过用户请求的数量
         return players[:max_count]
 
     def fetch_all_ranks(self, max_per_rank: int = 200) -> Dict[str, List[Dict[str, Any]]]:
@@ -98,32 +93,25 @@ class PlayerListSpider:
         """获取所有榜单的选手列表（合并去重）"""
         logger.info(f"开始获取选手列表 (每个榜单前{max_per_rank}名)")
 
-        # 获取所有榜单
         all_ranks = self.fetch_all_ranks(max_per_rank)
 
-        # 合并去重
-        all_players = []
-        seen_ids = set()
+        # 使用 dict 进行 O(1) 去重
+        player_map: Dict[str, Dict[str, Any]] = {}
         for rank_name, players in all_ranks.items():
             for p in players:
                 zh_id = p.get("zh_id")
-                if zh_id and zh_id not in seen_ids:
-                    seen_ids.add(zh_id)
-                    # 添加所属榜单信息
+                if not zh_id:
+                    continue
+                if zh_id not in player_map:
                     p["ranks"] = [rank_name]
-                    all_players.append(p)
-                elif zh_id in seen_ids:
-                    # 已存在，追加榜单
-                    for existing in all_players:
-                        if existing.get("zh_id") == zh_id:
-                            if "ranks" not in existing:
-                                existing["ranks"] = []
-                            if rank_name not in existing["ranks"]:
-                                existing["ranks"].append(rank_name)
-                            break
+                    player_map[zh_id] = p
+                else:
+                    existing_ranks = player_map[zh_id].get("ranks", [])
+                    if rank_name not in existing_ranks:
+                        existing_ranks.append(rank_name)
 
-        logger.info(f"去重后共 {len(all_players)} 个选手")
-        return all_players
+        logger.info(f"去重后共 {len(player_map)} 个选手")
+        return list(player_map.values())
 
 
 def crawl_player_list(max_per_rank: int = 200) -> List[Dict[str, Any]]:

@@ -250,13 +250,22 @@ class AsyncPlaywrightPool:
         """关闭所有资源"""
         logger.info("关闭 AsyncPlaywrightPool...")
 
+        # 关闭池中所有 contexts
         if self._context_pool:
-            # 清空池中的 contexts
             while not self._context_pool.empty():
                 try:
-                    self._context_pool.get_nowait()
+                    ctx = self._context_pool.get_nowait()
+                    await ctx.close()
                 except asyncio.QueueEmpty:
                     break
+
+        # 关闭正在使用的 contexts
+        for ctx in list(self._used_contexts):
+            try:
+                await ctx.close()
+            except Exception as e:
+                logger.warning(f"关闭使用中的 Context 时出错: {e}")
+        self._used_contexts.clear()
 
         # 关闭浏览器
         if self.browser:

@@ -1,5 +1,5 @@
 import re
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from bs4 import BeautifulSoup
 from src.spiders.base import AsyncBaseSpider
 from src.config import POSITION_URL

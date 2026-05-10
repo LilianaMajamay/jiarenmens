@@ -13,6 +13,7 @@ import signal
 import sys
 import time
 from pathlib import Path
+from datetime import date
 from typing import List, Dict, Any, Tuple, Optional
 
 from src.spiders.player_list import PlayerListSpider
@@ -60,11 +61,13 @@ def load_checkpoint() -> Dict[str, Any]:
 
 
 def save_checkpoint(state: Dict[str, Any]):
-    """保存检查点"""
+    """保存检查点（原子写入，防止进程中断时文件损坏）"""
     try:
         CHECKPOINT_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(CHECKPOINT_FILE, 'w', encoding='utf-8') as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
+        tmp_file = CHECKPOINT_FILE.with_suffix(".tmp")
+        with open(tmp_file, 'w', encoding='utf-8') as f:
+            json.dump(state, f, ensure_ascii=False, separators=(',', ':'))
+        tmp_file.replace(CHECKPOINT_FILE)
     except Exception as e:
         logger.warning(f"保存检查点失败: {e}")
 
@@ -141,7 +144,6 @@ async def crawl_all_data_async(
     start_time = checkpoint.get('start_time') or time.time()
 
     # 本次爬取日期
-    from datetime import date
     crawl_date = date.today().isoformat()
 
     logger.info(f"检查点: 已完成 {len(completed_ids)} 个选手")

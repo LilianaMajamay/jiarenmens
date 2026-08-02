@@ -48,6 +48,9 @@ data/
 # Environment
 .env
 
+# 抓包工具下载产物（setup_capture.py 生成，体积大不入库）
+tools/
+
 # Deployment
 venv/
 

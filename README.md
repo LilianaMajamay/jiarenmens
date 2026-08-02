@@ -53,6 +53,18 @@ cp .env.example .env
 令牌获取方式：用 mitmproxy 抓一次东方财富 APP 中"实盘组合"页面的请求即可
 （抓包脚本见 `scripts/capture_api.py`，输出 `logs/capture_flows.jsonl`）。
 
+### 抓包环境（Android 模拟器 + mitmproxy）
+
+完整的环境搭建手册见 [docs/抓包环境搭建.md](docs/抓包环境搭建.md)（含 MuMu 模拟器安装、
+APK 安装、root、系统证书、强制代理、令牌提取与常见坑）。一键下载工具：
+
+```powershell
+uv pip install -r scripts/requirements-capture.txt --python .venv\Scripts\python.exe
+.venv\Scripts\python.exe scripts\setup_capture.py
+```
+
+下载产物（MuMu 安装包 / 东方财富 APK / frida-server）统一放在 `tools/` 目录。
+
 ## 快速开始
 
 ```bash

@@ -1,0 +1,5 @@
+# 抓包/令牌获取环境依赖（与爬虫运行依赖分开）
+# 安装: uv pip install -r scripts/requirements-capture.txt --python .venv/Scripts/python.exe
+mitmproxy>=11.0
+frida-tools>=17.0
+httpx[http2]>=0.28

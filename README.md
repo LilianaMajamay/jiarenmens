@@ -53,6 +53,27 @@ cp .env.example .env
 令牌获取方式：用 mitmproxy 抓一次东方财富 APP 中"实盘组合"页面的请求即可
 （抓包脚本见 `scripts/capture_api.py`，输出 `logs/capture_flows.jsonl`）。
 
+## 运行前准备（爬取前检查清单）
+
+**普通爬取不需要打开任何软件**（不需要模拟器、不需要 mitmproxy、不需要浏览器）。
+只需要满足下面两点：
+
+1. **依赖已安装**：`pip install -r requirements.txt`
+2. **`.env` 已配置且令牌有效**：`SPZH_CT_TOKEN` / `SPZH_UT_TOKEN` / `SPZH_USER_ID` / `SPZH_DEVICE_ID`
+
+每次爬取前跑一遍自检，几秒钟就能确认是否就绪：
+
+```bash
+python main.py --check
+```
+
+自检会检查：依赖是否齐全 → `.env` 令牌是否已配置 → 接口是否连通 → 会话令牌是否有效，
+输出"全部就绪，可以开始爬取"即可直接运行。
+
+**什么时候才需要模拟器 + mitmproxy？** 只有令牌过期（自检提示"会话令牌无效"）时才需要
+按 [docs/抓包环境搭建.md](docs/抓包环境搭建.md) 重新抓包换取新令牌。令牌有效期内，
+模拟器、抓包软件都可以不打开。
+
 ### 抓包环境（Android 模拟器 + mitmproxy）
 
 完整的环境搭建手册见 [docs/抓包环境搭建.md](docs/抓包环境搭建.md)（含 MuMu 模拟器安装、
@@ -94,6 +115,8 @@ python main.py --unfollow
 | `--no-skip` | false | 不跳过已存在的选手数据 |
 | `--checkpoint-reset` | false | 重置检查点 |
 | `--follow` | false | 自动关注选手（否则持仓/调仓返回"关注关系不存在"） |
+| `--unfollow` | false | 一键取消关注全部已关注的组合（释放自选组合名额） |
+| `--check` | false | 运行环境自检（依赖/令牌/接口连通性），爬取前建议先跑 |
 | `--analyze` | false | 运行持仓分析 |
 | `--board` | 全部 | 分析指定榜单: 总榜/年榜/月榜/周榜/日榜（配合 `--analyze`） |
 

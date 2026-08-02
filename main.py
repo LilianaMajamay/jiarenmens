@@ -213,6 +213,68 @@ def crawl_all_data(
 # 命令行入口
 # =============================================================================
 
+def check_env() -> int:
+    """运行环境自检：依赖 / .env 令牌 / 接口连通性。返回 0 全部就绪。"""
+    print("=" * 50)
+    print("运行环境自检")
+    print("=" * 50)
+    ok = True
+
+    # 1) 依赖
+    deps = {"requests": "HTTP", "gmssl": "SM4签名", "dotenv": ".env加载"}
+    for mod, desc in deps.items():
+        try:
+            __import__(mod)
+            print(f"  [✓] 依赖 {mod} ({desc})")
+        except ImportError:
+            print(f"  [✗] 缺少依赖 {mod} ({desc})，请先: pip install -r requirements.txt")
+            ok = False
+
+    # 2) .env / 令牌
+    from src.config import SPZH_CT_TOKEN, SPZH_UT_TOKEN, SPZH_USER_ID, SPZH_DEVICE_ID
+    env_file = DATA_DIR.parent / ".env"
+    if not env_file.exists():
+        print(f"  [✗] 未找到 .env（请先: cp .env.example .env 并填入令牌）")
+        ok = False
+    for name, val in [("SPZH_CT_TOKEN", SPZH_CT_TOKEN), ("SPZH_UT_TOKEN", SPZH_UT_TOKEN),
+                      ("SPZH_USER_ID", SPZH_USER_ID), ("SPZH_DEVICE_ID", SPZH_DEVICE_ID)]:
+        if val:
+            print(f"  [✓] {name} 已配置")
+        else:
+            print(f"  [✗] {name} 为空，请填入 .env")
+            ok = False
+
+    # 3) 接口连通性
+    from src.api import spzh_client
+    try:
+        d = spzh_client.call("QualifyingConfigHandler", {"ctToken": "", "utToken": "", "userId": ""})
+        if d.get("code") == 0:
+            print("  [✓] 接口连通（QualifyingConfigHandler 正常）")
+        else:
+            print(f"  [✗] 接口异常: {d.get('message')} (code={d.get('code')})")
+            ok = False
+    except Exception as e:
+        print(f"  [✗] 网络/接口异常: {e}")
+        ok = False
+
+    # 4) 令牌有效性（带登录态的接口）
+    try:
+        d = spzh_client.call("FollowCombinationQueryHandler", spzh_client.auth_args())
+        if d.get("code") == 0:
+            print("  [✓] 会话令牌有效（可正常调用登录接口）")
+        else:
+            print(f"  [✗] 会话令牌无效: {d.get('message')} (code={d.get('code')})")
+            print("      令牌可能已过期，需要重新抓包，见 docs/抓包环境搭建.md")
+            ok = False
+    except Exception as e:
+        print(f"  [✗] 令牌校验异常: {e}")
+        ok = False
+
+    print("=" * 50)
+    print("结论:", "全部就绪，可以开始爬取 ✓" if ok else "存在未就绪项，请按提示处理 ✗")
+    return 0 if ok else 1
+
+
 def main():
     import argparse
 
@@ -229,7 +291,11 @@ def main():
                         help='分析指定榜单: 总榜/年榜/月榜/周榜/日榜 (配合 --analyze)')
     parser.add_argument('--unfollow', action='store_true',
                         help='一键取消关注全部已关注的组合（释放自选组合名额）')
+    parser.add_argument('--check', action='store_true', help='检查运行环境与令牌是否就绪（爬取前自检）')
     args = parser.parse_args()
+
+    if args.check:
+        sys.exit(check_env())
 
     if args.analyze:
         from src.analysis.position_analyzer import analyze_positions

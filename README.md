@@ -92,6 +92,7 @@ python main.py --follow
 | `--checkpoint-reset` | false | 重置检查点 |
 | `--follow` | false | 自动关注选手（否则持仓/调仓返回"关注关系不存在"） |
 | `--analyze` | false | 运行持仓分析 |
+| `--board` | 全部 | 分析指定榜单: 总榜/年榜/月榜/周榜/日榜（配合 `--analyze`） |
 
 ## 数据存储
 
@@ -129,6 +130,10 @@ trades (
 ```bash
 # 分析最新数据
 python main.py --analyze
+
+# 只分析某个榜单（如总榜 / 年榜）
+python main.py --analyze --board 总榜
+python main.py --analyze --board 年榜
 ```
 
 分析报告包含：
@@ -136,6 +141,9 @@ python main.py --analyze
 - **选手仓位分布** - 空仓、1成以下、3成以下、3-5成、5-7成、7-9成、9成以上
 - **股票盈亏分布** - 按盈利区间分类
 - **当日盈利最高的选手 Top 10**
+
+> 按榜单过滤依赖爬取时记录的榜单归属（`players.ranks` 字段）。
+> 旧数据/旧版本爬取的数据没有该字段，需要重新跑一次 `python main.py` 才会补上。
 
 ## 项目结构
 

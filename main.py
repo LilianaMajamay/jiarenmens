@@ -216,13 +216,6 @@ def crawl_all_data(
 def main():
     import argparse
 
-    # --analyze 跳转到分析模式
-    if '--analyze' in sys.argv:
-        from src.analysis.position_analyzer import analyze_positions
-        sys.argv = [a for a in sys.argv if a != '--analyze']
-        analyze_positions()
-        return
-
     parser = argparse.ArgumentParser(description='东方财富实盘选手爬虫')
     parser.add_argument('--test', action='store_true', help='测试模式(只处理10个选手)')
     parser.add_argument('--limit', type=int, default=DEFAULT_LIMIT, help=f'每榜单爬取数量 (default: {DEFAULT_LIMIT})')
@@ -230,7 +223,15 @@ def main():
     parser.add_argument('--no-skip', action='store_true', help='不跳过已存在的选手数据')
     parser.add_argument('--checkpoint-reset', action='store_true', help='重置检查点')
     parser.add_argument('--follow', action='store_true', help='自动关注选手（持仓/调仓可见的前提）')
+    parser.add_argument('--analyze', action='store_true', help='运行持仓分析')
+    parser.add_argument('--board', type=str, default=None,
+                        help='分析指定榜单: 总榜/年榜/月榜/周榜/日榜 (配合 --analyze)')
     args = parser.parse_args()
+
+    if args.analyze:
+        from src.analysis.position_analyzer import analyze_positions
+        analyze_positions(board=args.board)
+        return
 
     if args.checkpoint_reset and CHECKPOINT_FILE.exists():
         CHECKPOINT_FILE.unlink()

@@ -34,6 +34,7 @@ def crawl_player_detail(zh_id: Any, list_info: Optional[Dict[str, Any]] = None) 
         if not detail.get("user_id"):
             detail["user_id"] = list_info.get("user_id", "")
         if list_info.get("labels"):
-            import json
-            detail["labels"] = json.dumps(list_info["labels"], ensure_ascii=False)
+            detail["labels"] = list_info["labels"]
+        if list_info.get("ranks"):
+            detail["ranks"] = list_info["ranks"]
     return detail

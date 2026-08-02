@@ -185,8 +185,8 @@ class SQLiteStorage(StorageInterface):
             player.get('concept', ''),
             player.get('intro', ''),
             player.get('user_id', ''),
-            json.dumps(player.get('labels', [])),
-            json.dumps(player.get('ranks', [])),
+            json.dumps(player.get('labels', []), ensure_ascii=False),
+            json.dumps(player.get('ranks', []), ensure_ascii=False),
         )
 
     def save_player(self, player: Dict[str, Any]) -> None:
@@ -479,10 +479,16 @@ class SQLiteStorage(StorageInterface):
             rows = conn.execute("SELECT * FROM players").fetchall()
             return [self._row_to_dict(row) for row in rows]
 
-    def get_all_player_ids(self) -> Set[str]:
-        """获取所有选手 ID"""
+    def get_all_player_ids(self, board: str | None = None) -> Set[str]:
+        """获取选手 ID（可选按榜单过滤，ranks 为 JSON 数组字符串）"""
         with self.get_connection() as conn:
-            rows = conn.execute("SELECT zh_id FROM players").fetchall()
+            if board:
+                rows = conn.execute(
+                    "SELECT zh_id FROM players WHERE ranks LIKE ?",
+                    (f'%{board}%',),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT zh_id FROM players").fetchall()
             return {row['zh_id'] for row in rows}
 
     def _row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
@@ -524,29 +530,36 @@ class SQLiteStorage(StorageInterface):
             """, (crawl_date,)).fetchall()
             return [dict(row) for row in rows]
 
-    def get_all_positions(self, crawl_date: str | None = None) -> List[Dict[str, Any]]:
-        """获取所有选手的持仓数据（可选按日期过滤）"""
+    def get_all_positions(self, crawl_date: str | None = None, board: str | None = None) -> List[Dict[str, Any]]:
+        """获取所有选手的持仓数据（可选按日期/榜单过滤）"""
         with self.get_connection() as conn:
             if crawl_date:
-                rows = conn.execute("""
+                sql = """
                     SELECT p.*, pl.name as player_name
                     FROM positions p
                     LEFT JOIN players pl ON p.zh_id = pl.zh_id
                     WHERE p.crawl_date = ?
-                """, (crawl_date,)).fetchall()
+                """
+                params = [crawl_date]
             else:
-                rows = conn.execute("""
+                sql = """
                     SELECT p.*, pl.name as player_name
                     FROM positions p
                     LEFT JOIN players pl ON p.zh_id = pl.zh_id
-                """).fetchall()
+                """
+                params = []
+            if board:
+                sql += " AND pl.ranks LIKE ?"
+                params.append(f'%{board}%')
+            rows = conn.execute(sql, params).fetchall()
             return [dict(row) for row in rows]
 
-    def get_top_holdings(self, top_n: int = 20, crawl_date: str | None = None) -> List[Dict[str, Any]]:
-        """获取持仓最多的股票"""
+    def get_top_holdings(self, top_n: int = 20, crawl_date: str | None = None,
+                         board: str | None = None) -> List[Dict[str, Any]]:
+        """获取持仓最多的股票（可选按榜单过滤）"""
         crawl_date = self._today_or_latest(crawl_date)
         with self.get_connection() as conn:
-            rows = conn.execute("""
+            sql = """
                 SELECT
                     stock_code,
                     stock_name,
@@ -555,17 +568,22 @@ class SQLiteStorage(StorageInterface):
                     AVG(profit_ratio) as avg_profit_ratio
                 FROM positions
                 WHERE stock_code IS NOT NULL AND stock_code != '' AND crawl_date = ?
-                GROUP BY stock_code
-                ORDER BY holder_count DESC
-                LIMIT ?
-            """, (crawl_date, top_n)).fetchall()
+            """
+            params = [crawl_date]
+            if board:
+                sql += " AND zh_id IN (SELECT zh_id FROM players WHERE ranks LIKE ?)"
+                params.append(f'%{board}%')
+            sql += " GROUP BY stock_code ORDER BY holder_count DESC LIMIT ?"
+            params.append(top_n)
+            rows = conn.execute(sql, params).fetchall()
             return [dict(row) for row in rows]
 
-    def get_position_distribution(self, crawl_date: str | None = None) -> Dict[str, int]:
-        """获取选手仓位分布"""
+    def get_position_distribution(self, crawl_date: str | None = None,
+                                  board: str | None = None) -> Dict[str, int]:
+        """获取选手仓位分布（可选按榜单过滤）"""
         crawl_date = self._today_or_latest(crawl_date)
         with self.get_connection() as conn:
-            rows = conn.execute("""
+            sql = """
                 SELECT
                     CASE
                         WHEN total_pos = 0 THEN '空仓'
@@ -581,22 +599,35 @@ class SQLiteStorage(StorageInterface):
                     SELECT zh_id, SUM(position_ratio) as total_pos
                     FROM positions
                     WHERE crawl_date = ?
-                    GROUP BY zh_id
                 )
                 GROUP BY position_level
                 ORDER BY player_count DESC
-            """, (crawl_date,)).fetchall()
+            """
+            params = [crawl_date]
+            if board:
+                sql = sql.replace(
+                    "WHERE crawl_date = ?",
+                    "WHERE crawl_date = ? AND zh_id IN (SELECT zh_id FROM players WHERE ranks LIKE ?)",
+                    1,
+                )
+                params.append(f'%{board}%')
+            rows = conn.execute(sql, params).fetchall()
             return {row['position_level']: row['player_count'] for row in rows}
 
-    def get_top_performers(self, top_n: int = 10) -> List[Dict[str, Any]]:
-        """获取当日盈利最高的选手"""
+    def get_top_performers(self, top_n: int = 10, board: str | None = None) -> List[Dict[str, Any]]:
+        """获取当日盈利最高的选手（可选按榜单过滤）"""
         with self.get_connection() as conn:
-            rows = conn.execute("""
+            sql = """
                 SELECT zh_id, name, daily_return, total_return
                 FROM players
-                ORDER BY daily_return DESC
-                LIMIT ?
-            """, (top_n,)).fetchall()
+            """
+            params = []
+            if board:
+                sql += " WHERE ranks LIKE ?"
+                params.append(f'%{board}%')
+            sql += " ORDER BY daily_return DESC LIMIT ?"
+            params.append(top_n)
+            rows = conn.execute(sql, params).fetchall()
             return [dict(row) for row in rows]
 
     def get_stock_followers(self, stock_code: str) -> List[Dict[str, Any]]:
@@ -616,11 +647,12 @@ class SQLiteStorage(StorageInterface):
             """, (stock_code,)).fetchall()
             return [dict(row) for row in rows]
 
-    def get_sector_distribution(self, crawl_date: str | None = None) -> List[Dict[str, Any]]:
-        """获取概念板块分布"""
+    def get_sector_distribution(self, crawl_date: str | None = None,
+                                board: str | None = None) -> List[Dict[str, Any]]:
+        """获取概念板块分布（可选按榜单过滤）"""
         crawl_date = self._today_or_latest(crawl_date)
         with self.get_connection() as conn:
-            rows = conn.execute("""
+            sql = """
                 SELECT
                     CASE
                         WHEN avg_profit < -10 THEN '<-10%'
@@ -643,7 +675,16 @@ class SQLiteStorage(StorageInterface):
                 )
                 GROUP BY profit_range
                 ORDER BY profit_range
-            """, (crawl_date,)).fetchall()
+            """
+            params = [crawl_date]
+            if board:
+                sql = sql.replace(
+                    "WHERE stock_code IS NOT NULL AND stock_code != ''\n                        AND crawl_date = ?",
+                    "WHERE stock_code IS NOT NULL AND stock_code != ''\n                        AND crawl_date = ?\n                        AND zh_id IN (SELECT zh_id FROM players WHERE ranks LIKE ?)",
+                    1,
+                )
+                params.append(f'%{board}%')
+            rows = conn.execute(sql, params).fetchall()
             return [{'range': row['profit_range'], 'count': row['stock_count']} for row in rows]
 
     def get_player_trade_history(self, zh_id: str, limit: int = 50) -> List[Dict[str, Any]]:
@@ -659,24 +700,25 @@ class SQLiteStorage(StorageInterface):
 
     # ---- 报告生成 ----
 
-    def generate_report(self) -> Dict[str, Any]:
-        """生成完整分析报告（使用最新爬取日期）"""
+    def generate_report(self, board: str | None = None) -> Dict[str, Any]:
+        """生成完整分析报告（使用最新爬取日期，可选按榜单过滤）"""
         crawl_date = self._today_or_latest()
-        player_ids = self.get_all_player_ids()
-        positions = self.get_all_positions(crawl_date)
+        player_ids = self.get_all_player_ids(board)
+        positions = self.get_all_positions(crawl_date, board)
         unique_stocks = len(set(p.get('stock_code', '') for p in positions if p.get('stock_code')))
 
         return {
             'crawl_date': crawl_date,
+            'board': board,
             'summary': {
                 'total_players': len(player_ids),
                 'total_positions': len(positions),
                 'unique_stocks': unique_stocks,
             },
-            'top_holdings': self.get_top_holdings(20, crawl_date),
-            'position_distribution': self.get_position_distribution(crawl_date),
-            'profit_distribution': self.get_sector_distribution(crawl_date),
-            'top_performers': self.get_top_performers(10),
+            'top_holdings': self.get_top_holdings(20, crawl_date, board),
+            'position_distribution': self.get_position_distribution(crawl_date, board),
+            'profit_distribution': self.get_sector_distribution(crawl_date, board),
+            'top_performers': self.get_top_performers(10, board),
         }
 
     # ---- 工具方法 ----

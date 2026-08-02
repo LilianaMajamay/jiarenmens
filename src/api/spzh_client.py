@@ -140,8 +140,8 @@ def fetch_player_detail(zh_id: Any) -> Optional[Dict[str, Any]]:
         "concept": "",
         "intro": d.get("summary") or d.get("comment") or "",
         "user_id": d.get("userId") or "",
-        "labels": "[]",
-        "ranks": "[]",
+        "labels": [],
+        "ranks": [],
     }
 
 

@@ -42,13 +42,13 @@ class PositionAnalyzer:
         """获取当日盈利最高的选手"""
         return self.storage.get_top_performers(top_n)
 
-    def generate_report(self) -> Dict[str, Any]:
-        """生成完整分析报告（使用最新爬取日期）"""
-        return self.storage.generate_report()
+    def generate_report(self, board: str | None = None) -> Dict[str, Any]:
+        """生成完整分析报告（使用最新爬取日期，可选按榜单过滤）"""
+        return self.storage.generate_report(board)
 
-    def save_report(self, output_path: str | None = None) -> Dict[str, Any]:
+    def save_report(self, output_path: str | None = None, board: str | None = None) -> Dict[str, Any]:
         """保存分析报告"""
-        report = self.generate_report()
+        report = self.generate_report(board)
 
         if output_path is None:
             from src.config import DATA_DIR
@@ -62,14 +62,27 @@ class PositionAnalyzer:
         return report
 
 
-def analyze_positions():
+def _normalize_board(board: str) -> str:
+    """把 总/年/月/周/日 等简写归一为 总榜/年榜/月榜/周榜/日榜。"""
+    if not board:
+        return board
+    board = board.strip()
+    if board.endswith("榜"):
+        return board
+    if board in ("总", "年", "月", "周", "日"):
+        return board + "榜"
+    return board
+
+
+def analyze_positions(board: str | None = None):
     """命令行分析入口"""
     analyzer = PositionAnalyzer()
-    report = analyzer.generate_report()
+    report = analyzer.generate_report(_normalize_board(board))
 
     crawl_date = report.get('crawl_date', '未知')
+    board_text = report.get('board') or '全部'
     print("\n" + "=" * 50)
-    print(f"持仓分析报告 ({crawl_date})")
+    print(f"持仓分析报告 ({crawl_date}) [{board_text}]")
     print("=" * 50)
     print(f"\n【概览】")
     print(f"  选手总数: {report['summary']['total_players']}")

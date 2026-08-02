@@ -247,6 +247,58 @@ def follow_player(zh_id: Any) -> bool:
         return False
 
 
+def get_followed_ids() -> List[str]:
+    """获取当前已关注的组合 ID 列表。"""
+    try:
+        data = call("FollowCombinationQueryHandler", auth_args())
+        if not _ok(data):
+            logger.warning(f"获取关注列表失败: {data.get('message')}")
+            return []
+        return (data.get("data") or {}).get("followCidList") or []
+    except Exception as e:
+        logger.warning(f"获取关注列表异常: {e}")
+        return []
+
+
+def unfollow_player(zh_id: Any) -> bool:
+    """取消关注选手（释放自选组合名额）。"""
+    try:
+        url = "https://spzhapi.dfcfs.cn/srtV1"
+        params = {
+            "type": "rt_cancel_concern",
+            "ctToken": SPZH_CT_TOKEN,
+            "utToken": SPZH_UT_TOKEN,
+            "appVer": "11002002",
+            "zh": zh_id,
+            "userId": SPZH_USER_ID,
+        }
+        r = requests.get(url, params=params, timeout=15)
+        d = r.json()
+        ok = str(d.get("result")) == "0"
+        if not ok:
+            logger.warning(f"取消关注失败 {zh_id}: {d.get('message')}")
+        return ok
+    except Exception as e:
+        logger.warning(f"取消关注异常 {zh_id}: {e}")
+        return False
+
+
+def unfollow_all() -> int:
+    """一键取消关注全部已关注的组合。返回成功取消的数量。"""
+    ids = get_followed_ids()
+    if not ids:
+        logger.info("当前没有关注的组合")
+        return 0
+    logger.info(f"当前关注 {len(ids)} 个组合，开始取消...")
+    ok = 0
+    for zh in ids:
+        if unfollow_player(zh):
+            ok += 1
+        time.sleep(0.1)
+    logger.info(f"取消关注完成: {ok}/{len(ids)}")
+    return ok
+
+
 def _to_float(v: Any, default: float = 0.0) -> float:
     try:
         return float(v)

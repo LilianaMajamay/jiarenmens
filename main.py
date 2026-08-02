@@ -227,11 +227,19 @@ def main():
     parser.add_argument('--analyze', action='store_true', help='运行持仓分析')
     parser.add_argument('--board', type=str, default=None,
                         help='分析指定榜单: 总榜/年榜/月榜/周榜/日榜 (配合 --analyze)')
+    parser.add_argument('--unfollow', action='store_true',
+                        help='一键取消关注全部已关注的组合（释放自选组合名额）')
     args = parser.parse_args()
 
     if args.analyze:
         from src.analysis.position_analyzer import analyze_positions
         analyze_positions(board=args.board)
+        return
+
+    if args.unfollow:
+        from src.api import spzh_client
+        count = spzh_client.unfollow_all()
+        logger.info(f"一键取消关注完成，共取消 {count} 个组合")
         return
 
     if args.checkpoint_reset and CHECKPOINT_FILE.exists():

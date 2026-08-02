@@ -1,0 +1,31 @@
+# ═══════════════════════════════════════════════
+# 东方财富实盘选手爬虫 - Docker Compose
+# ═══════════════════════════════════════════════
+# 使用:
+#   docker compose up -d              # 后台运行
+#   docker compose run --rm app python main.py --test   # 测试运行
+#   docker compose logs -f            # 查看日志
+# ═══════════════════════════════════════════════
+
+services:
+  app:
+    build: .
+    image: jiarenmens:latest
+    container_name: jiarenmens
+    restart: unless-stopped
+    volumes:
+      # 持久化数据 + 日志
+      - crawl_data:/app/data
+      - crawl_logs:/app/logs
+    env_file:
+      - .env
+    environment:
+      - CRAWL_WORKERS=${CRAWL_WORKERS:-10}
+      - CRAWL_LIMIT=${CRAWL_LIMIT:-500}
+      - PYTHONUNBUFFERED=1
+    # 默认运行一次（oneshot），配合 cron 或外部调度定时执行
+    command: ["python", "main.py"]
+
+volumes:
+  crawl_data:
+  crawl_logs:

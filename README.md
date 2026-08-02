@@ -2,42 +2,56 @@
 
 爬取东方财富实盘组合榜单数据，包括选手信息、持仓明细和历史调仓记录。
 
+> **2026-08 重要变更**：东方财富已停用旧 H5 页面（groupwap.eastmoney.com），实盘组合迁移到
+> 新接口 `spzhapi.dfcfs.cn/rtV3`。本项目已改为**直连新接口**（签名算法从 APP 的 RN bundle
+> 逆向获得），不再依赖 Playwright 渲染页面。
+
 ## 功能特性
 
-- **异步并发爬取** - 使用 asyncio + Playwright，单选手内三类数据真正并行
-- **浏览器连接池** - 浏览器实例复用，Context 池化管理，避免频繁创建/销毁开销
-- **反检测机制** - 统一 UserAgent / viewport / locale / 时区 + `add_init_script` 注入隐藏 `webdriver`、伪造 plugins/languages、修补 permissions、伪造 WebGL vendor
-- **精确等待策略** - 抓取时优先等待具体元素或关键文本（如"日收益"/"持仓"/"调仓"），避免 `networkidle` 长时间空转
+- **线程池并发爬取** - 直接调用新接口，线程池并发，无浏览器开销
+- **新接口签名** - SM4-CBC + SHA256 签名（密钥已逆向），可脱离 APP 直连
 - **SQLite 高效存储** - 日期隔离存储，支持按日期分析查询，批量写入优化
 - **断点续传** - Ctrl+C 中断后可继续，自动保存检查点
-- **跨平台兼容** - 支持 Windows 和 Linux（Ubuntu），自动适配 Chromium 启动参数
+- **自动关注** - `--follow` 自动关注选手，满足持仓/调仓可见的前置条件
+- **跨平台兼容** - 纯 Python requests，Windows / Linux 均可运行
+
+## 新接口说明（逆向成果）
+
+- 域名: `spzhapi.dfcfs.cn/rtV3`（POST JSON）
+- 请求头: `sign` / `requestid` / `appversion` / `rnversion` 缺一不可（WAF 校验）
+- 签名: `SHA256( SM4-CBC( JSON(deepSort(信封)).lower(), key=iv='e4dd41fd...') .hex )`
+- 会话令牌 `SPZH_CT_TOKEN` / `SPZH_UT_TOKEN` 会过期，需定期从 APP 抓包更新
+- 选手详情接口不再公开胜率/最大回撤（新平台限制），这两个字段可能为 0
 
 ## 安装依赖
 
-### Windows
+要求：Python 3.10+（`pip` 或 `uv`）
 
 ```bash
+# 安装依赖
 pip install -r requirements.txt
-playwright install chromium
-```
-
-### Ubuntu / Linux
-
-```bash
-pip install -r requirements.txt
-playwright install chromium
-
-# 安装 Chromium 系统依赖（必需！）
-sudo playwright install-deps chromium
-
-# 安装中文字体（页面渲染必需）
-sudo apt-get install -y fonts-noto-cjk
+# 或使用 uv
+uv pip install -r requirements.txt
 ```
 
 主要依赖：
-- `requests` - HTTP 请求（仅用于选手列表 API）
-- `playwright` - 动态页面渲染（详情/持仓/调仓）
-- `beautifulsoup4` + `lxml` - HTML 解析
+- `requests` - HTTP 请求（榜单 + 新接口调用）
+- `gmssl` - SM4 国密算法（新接口签名）
+- `python-dotenv` - 加载 `.env` 配置
+- `beautifulsoup4` + `lxml` - 历史遗留解析（当前主流程已不依赖）
+- `playwright` - 仅诊断脚本使用（主流程不再需要）
+
+### 配置会话令牌
+
+新接口需要有效的东方财富 APP 会话令牌（会过期）：
+
+```bash
+cp .env.example .env
+```
+
+然后编辑 `.env`，填入 `SPZH_CT_TOKEN` / `SPZH_UT_TOKEN` / `SPZH_USER_ID` / `SPZH_DEVICE_ID`。
+令牌获取方式：用 mitmproxy 抓一次东方财富 APP 中"实盘组合"页面的请求即可
+（抓包脚本见 `scripts/capture_api.py`，输出 `logs/capture_flows.jsonl`）。
 
 ## 快速开始
 
@@ -50,6 +64,9 @@ python main.py --test
 
 # 指定每榜单 100 名，并发 30
 python main.py --limit 100 --workers 30
+
+# 自动关注选手后爬取（持仓/调仓可见的前置条件）
+python main.py --follow
 ```
 
 ## 命令行参数
@@ -61,6 +78,7 @@ python main.py --limit 100 --workers 30
 | `--test` | false | 测试模式，只处理 10 个选手 |
 | `--no-skip` | false | 不跳过已存在的选手数据 |
 | `--checkpoint-reset` | false | 重置检查点 |
+| `--follow` | false | 自动关注选手（否则持仓/调仓返回"关注关系不存在"） |
 | `--analyze` | false | 运行持仓分析 |
 
 ## 数据存储
@@ -117,13 +135,14 @@ dfcfshipan/
 │   ├── checkpoint.json         # 爬取检查点
 │   └── crawl_data.db           # SQLite 数据库
 └── src/
-    ├── config.py              # 配置（URL、路径等）
+    ├── config.py              # 配置（URL、路径、新接口令牌等）
+    ├── api/                   # 新接口客户端（spzhapi.dfcfs.cn）
+    │   └── spzh_client.py     # 签名计算 + 详情/持仓/调仓/关注封装
     ├── spiders/              # 爬虫模块
-    │   ├── base.py           # 异步基础爬虫类
-    │   ├── player_list.py    # 选手列表爬虫（API）
-    │   ├── player_detail.py   # 选手详情爬虫
-    │   ├── position.py        # 持仓数据爬虫
-    │   └── trade.py          # 调仓记录爬虫
+    │   ├── player_list.py    # 选手列表（旧榜单 API）
+    │   ├── player_detail.py   # 选手详情（新接口）
+    │   ├── position.py        # 持仓数据（新接口）
+    │   └── trade.py          # 调仓记录（新接口）
     ├── storage/              # 存储模块
     │   ├── interface.py      # 存储接口抽象
     │   ├── sqlite_storage.py  # SQLite 存储实现
@@ -137,23 +156,18 @@ dfcfshipan/
 
 ## 技术架构
 
-### 异步爬取流程
+### 爬取流程
 
 ```
 1. 获取选手列表 (API)
+   （旧榜单接口 rtV1/rt_get_rank 仍可用，字段更全）
        ↓
-2. 创建 AsyncPlaywrightPool (复用浏览器)
-   - Chromium 启动参数: --no-sandbox, --disable-dev-shm-usage 等
-   - Context 反检测: Windows Chrome UA, zh-CN locale, Asia/Shanghai 时区
-   - add_init_script 注入: 隐藏 webdriver / 伪造 plugins / WebGL 等
-       ↓
-3. 对每个选手：
-   ┌─────────────────────────────────────┐
-   │  asyncio.gather() 并行执行:          │
-   │    - fetch_player_detail (详情)       │
-   │    - fetch_positions (持仓)          │
-   │    - fetch_trades (调仓)            │
-   └─────────────────────────────────────┘
+2. 线程池并发（ThreadPoolExecutor）
+   对每个选手（--follow 时先自动关注）：
+   - CombinationInfoHandler              详情
+   - combination_yield_detail_handler    收益/净值
+   - CombinationHoldPositionPermitHandler 持仓
+   - CombinationRelocatePositionHandler  调仓（分页）
        ↓
 4. 批量存入 SQLite (每 50 个选手)
    - 按 crawl_date 隔离数据
@@ -161,13 +175,17 @@ dfcfshipan/
 5. 每 50 个选手保存检查点（原子写入）
 ```
 
-### 浏览器连接池
+### 签名算法
 
-- 单个 Playwright + Browser 实例启动一次
-- 多个 BrowserContext 组成连接池
-- 使用 Semaphore 控制并发，无需额外锁
-- Context 创建时自动注入反检测脚本（`add_init_script`）
-- Context 失效时自动创建新 Context 替补，保持池容量
+实盘组合新接口的请求头 `sign` 计算方式（逆向自 APP 的 RN bundle `paramsEncrypt`）：
+
+```python
+plain = json.dumps(deep_sort(envelope), separators=(",", ":")).lower()
+ct    = SM4-CBC(plain, key=iv="e4dd41fd138867c3665492702fe277eb")
+sign  = sha256(ct.hex()).hexdigest()
+```
+
+实现位于 `src/api/spzh_client.py`。
 
 ### 断点续传
 
@@ -180,12 +198,13 @@ dfcfshipan/
 
 ## 注意事项
 
-1. **Ubuntu 用户必须运行 `sudo playwright install-deps chromium`**，否则 Chromium 无法启动
-2. **缺少中文字体**会导致页面 JS 渲染异常，运行 `sudo apt-get install fonts-noto-cjk fonts-noto-cjk-extra`
-3. **并发数建议 10-20**，过高可能被网站限流
-4. **自动重试机制**，失败自动重试 3 次，被反爬拦截时会打印页面片段到日志
-5. **调仓记录需要滚动加载**，爬取较慢
-6. **海外云服务器** 抓取国内行情站点常被风控，建议使用国内云或加代理
+1. **会话令牌会过期**（`SPZH_CT_TOKEN` / `SPZH_UT_TOKEN`），过期后接口会拒绝，
+   需要用模拟器/手机 APP 重新抓包更新（抓包环境已就绪，见 `scripts/capture_api.py`）
+2. **持仓/调仓需关注选手**：不加 `--follow` 时大多返回"关注关系不存在"（9035）
+3. **部分选手未授权公开**持仓/调仓（返回 30001），属平台规则，跳过即可
+4. **并发建议 5-15**，过高可能触发 WAF 限流（code 9081）
+5. **胜率/最大回撤**在新接口中不公开，多数选手为 0
+6. 调仓历史接口不含成交数量，`trades_count` 按 1 笔计、`position_value` 存均价
 
 ## 故障排查
 

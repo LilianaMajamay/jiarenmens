@@ -1,0 +1,47 @@
+# ═══════════════════════════════════════════════
+# systemd service — 东方财富实盘选手爬虫
+# ═══════════════════════════════════════════════
+# 安装:
+#   sudo cp deploy/jiarenmens.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable jiarenmens
+#   sudo systemctl start jiarenmens
+#
+# 环境变量通过 /etc/jiarenmens/env 配置（.env 格式）
+# ═══════════════════════════════════════════════
+
+[Unit]
+Description=东方财富实盘选手爬虫
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+
+# 工作目录
+WorkingDirectory=/opt/jiarenmens
+
+# 加载环境变量
+EnvironmentFile=/etc/jiarenmens/env
+
+# 虚拟环境 Python
+ExecStart=/opt/jiarenmens/venv/bin/python /opt/jiarenmens/main.py
+
+# 资源限制（适配 4核/4GB 服务器）
+CPUQuota=80%
+MemoryMax=3G
+MemoryHigh=2.5G
+TasksMax=200
+
+# 日志
+StandardOutput=journal
+StandardError=journal
+
+# 重启策略（oneshot 类型需要 Restart=on-success 才能自动重跑）
+Restart=on-success
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

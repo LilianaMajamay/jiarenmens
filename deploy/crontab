@@ -1,0 +1,21 @@
+# ═══════════════════════════════════════════════
+# 定时任务 — 东方财富实盘选手爬虫
+# ═══════════════════════════════════════════════
+# 安装:
+#   sudo cp deploy/crontab /etc/cron.d/jiarenmens
+#   sudo chmod 644 /etc/cron.d/jiarenmens
+#
+# 该文件使用 /etc/cron.d/ 格式，第 6 列指定运行用户
+# ═══════════════════════════════════════════════
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# 工作日 9:30 开盘前执行
+30 9 * * 1-5 root cd /opt/jiarenmens && venv/bin/python main.py >> /var/log/jiarenmens.log 2>&1
+
+# 工作日 15:00 收盘后执行
+0 15 * * 1-5 root cd /opt/jiarenmens && venv/bin/python main.py >> /var/log/jiarenmens.log 2>&1
+
+# 日志文件轮转（每周日 0:00 清空旧日志，避免 /var/log 撑满）
+0 0 * * 0 root truncate -s 0 /var/log/jiarenmens.log

@@ -348,6 +348,104 @@ class SQLiteStorage(StorageInterface):
                         for trade in trades
                     ])
 
+    # =========================================================================
+    # 数据校验
+    # =========================================================================
+
+    @staticmethod
+    def _validate_player(player: Dict[str, Any]) -> Dict[str, Any]:
+        """校验并修正选手数据，防止脏数据入库"""
+        cleaned = dict(player)
+        # zh_id 必须存在
+        if not cleaned.get('zh_id'):
+            logger.warning(f"选手数据缺少 zh_id，跳过")
+            return {}
+        # 数值边界检查
+        for key in ('total_return', 'daily_return', 'net_value', 'max_drawdown', 'win_rate'):
+            val = cleaned.get(key, 0.0)
+            if not isinstance(val, (int, float)):
+                cleaned[key] = 0.0
+            elif abs(val) > 1_000_000:  # 异常大值
+                logger.warning(f"选手 {cleaned.get('zh_id')} {key}={val} 异常，已归零")
+                cleaned[key] = 0.0
+        return cleaned
+
+    @staticmethod
+    def _validate_position(pos: Dict[str, Any]) -> bool:
+        """校验持仓数据"""
+        if not pos.get('stock_code') or not pos.get('stock_name'):
+            return False
+        pr = pos.get('position_ratio', 0)
+        if isinstance(pr, (int, float)) and (pr < 0 or pr > 100):
+            logger.warning(f"仓位比例异常 {pos.get('stock_code')}: {pr}")
+            pos['position_ratio'] = max(0, min(100, pr))
+        return True
+
+    @staticmethod
+    def _validate_trade(trade: Dict[str, Any]) -> bool:
+        """校验调仓记录"""
+        if not trade.get('stock_code') or not trade.get('trade_date'):
+            return False
+        return True
+
+    # =========================================================================
+    # 原子批量写入（选手+持仓+调仓在同一个事务中）
+    # =========================================================================
+
+    def flush_all(self, players: List[Dict], positions_data: List[tuple], trades_data: List[tuple], crawl_date: str | None = None) -> None:
+        """
+        在一个事务中保存选手、持仓、调仓数据，保证原子性。
+
+        Args:
+            players: 选手字典列表
+            positions_data: [(zh_id, [pos_dict, ...]), ...]
+            trades_data: [(zh_id, [trade_dict, ...]), ...]
+            crawl_date: 爬取日期
+        """
+        if not any([players, positions_data, trades_data]):
+            return
+        if crawl_date is None:
+            crawl_date = date.today().isoformat()
+
+        with self.get_connection() as conn:
+            # 选手
+            valid_players = []
+            for p in players:
+                cleaned = self._validate_player(p)
+                if cleaned:
+                    valid_players.append(cleaned)
+            if valid_players:
+                conn.executemany(self._PLAYER_INSERT_SQL, [self._player_values(p) for p in valid_players])
+
+            # 持仓（先删后插）
+            for zh_id, poss in positions_data:
+                conn.execute("DELETE FROM positions WHERE zh_id=? AND crawl_date=?", (zh_id, crawl_date))
+                if poss:
+                    valid_poss = [p for p in poss if self._validate_position(p)]
+                    if valid_poss:
+                        conn.executemany(self._POSITION_INSERT_SQL, [
+                            (zh_id, p.get('stock_name', ''), p.get('stock_code', ''),
+                             p.get('cost_price', 0.0), p.get('current_price', 0.0),
+                             p.get('profit_ratio', 0.0), p.get('position_ratio', 0.0),
+                             p.get('update_time', ''), crawl_date)
+                            for p in valid_poss
+                        ])
+
+            # 调仓（先删后插）
+            for zh_id, trs in trades_data:
+                conn.execute("DELETE FROM trades WHERE zh_id=? AND crawl_date=?", (zh_id, crawl_date))
+                if trs:
+                    valid_trs = [t for t in trs if self._validate_trade(t)]
+                    if valid_trs:
+                        conn.executemany(self._TRADE_INSERT_SQL, [
+                            (zh_id, t.get('stock_name', ''), t.get('stock_code', ''),
+                             t.get('trades', t.get('trades_count', 1)),
+                             t.get('position_ratio', ''), t.get('position_value', 0.0),
+                             t.get('trade_date', ''), t.get('direction', ''),
+                             t.get('position_change', 0.0), crawl_date)
+                            for t in valid_trs
+                        ])
+
     def load_trades(self, zh_id: str, crawl_date: str | None = None) -> List[Dict[str, Any]]:
         """加载调仓记录（可选按日期过滤）"""
         with self.get_connection() as conn:

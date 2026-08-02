@@ -1,0 +1,34 @@
+# Python
+.gitignore
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+*.egg
+.Python
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data & logs (volume mount)
+data/
+logs/
+
+# Env
+.env
+
+# Docker
+.docker/
+
+# Git
+.git/
+README.md

@@ -1,36 +1,44 @@
 """
-东方财富实盘选手爬虫
+东方财富实盘选手爬虫（新接口版）
 
-功能：
-- 异步 Playwright 并发爬取
-- SQLite 高效存储
-- 增量更新 + 断点续传
-- 批量写入优化
+架构：
+1. 获取选手列表（旧榜单 API rtV1/rt_get_rank，仍可用且字段更全）
+2. 线程池并发爬取选手详情 + 持仓 + 调仓（新接口 spzhapi.dfcfs.cn/rtV3）
+3. 批量原子写入 SQLite
+4. 断点续传（检查点）
+
+说明：持仓/调仓需要「关注选手」且选手授权公开；--follow 可自动关注。
 """
-import asyncio
 import json
+import random
 import signal
 import sys
+import threading
 import time
-from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
-from typing import List, Dict, Any, Tuple, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from src.spiders.player_list import PlayerListSpider
-from src.spiders.player_detail import crawl_player_detail_async
-from src.spiders.position import crawl_positions_async
-from src.spiders.trade import crawl_trades_async
+from src.spiders.player_detail import crawl_player_detail
+from src.spiders.position import crawl_positions
+from src.spiders.trade import crawl_trades
+from src.api import spzh_client
 from src.storage.storage_factory import get_storage
 from src.utils.logger import setup_logger
-from src.utils.async_playwright_pool import AsyncPlaywrightPool
+from src.config import DATA_DIR, BATCH_SIZE, CHECKPOINT_INTERVAL, DEFAULT_LIMIT, DEFAULT_WORKERS
 
 logger = setup_logger()
 
-# 检查点文件
-CHECKPOINT_FILE = Path(__file__).parent / "data" / "checkpoint.json"
+CHECKPOINT_FILE = DATA_DIR / "checkpoint.json"
 
-# 批量保存配置
-BATCH_SIZE = 50
+# 全局中断标志
+INTERRUPTED = threading.Event()
+
+
+def _signal_handler(signum, frame):
+    logger.info("收到中断信号，正在保存数据...")
+    INTERRUPTED.set()
 
 
 # =============================================================================
@@ -38,250 +46,177 @@ BATCH_SIZE = 50
 # =============================================================================
 
 def load_checkpoint() -> Dict[str, Any]:
-    """加载检查点"""
+    """加载检查点，不存在时返回初始状态。"""
     if not CHECKPOINT_FILE.exists():
-        return {
-            'last_index': 0,
-            'completed_ids': [],
-            'last_list_update': None,
-            'start_time': None
-        }
-
+        return {'last_index': 0, 'completed_ids': [], 'last_list_update': None, 'start_time': None}
     try:
         with open(CHECKPOINT_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     except Exception as e:
         logger.warning(f"加载检查点失败: {e}")
-        return {
-            'last_index': 0,
-            'completed_ids': [],
-            'last_list_update': None,
-            'start_time': None
-        }
+        return {'last_index': 0, 'completed_ids': [], 'last_list_update': None, 'start_time': None}
 
 
-def save_checkpoint(state: Dict[str, Any]):
-    """保存检查点（原子写入，防止进程中断时文件损坏）"""
+def save_checkpoint(state: Dict[str, Any]) -> None:
+    """原子写入检查点。"""
     try:
         CHECKPOINT_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp_file = CHECKPOINT_FILE.with_suffix(".tmp")
-        with open(tmp_file, 'w', encoding='utf-8') as f:
+        tmp = CHECKPOINT_FILE.with_suffix(".tmp")
+        with open(tmp, 'w', encoding='utf-8') as f:
             json.dump(state, f, ensure_ascii=False, separators=(',', ':'))
-        tmp_file.replace(CHECKPOINT_FILE)
+        tmp.replace(CHECKPOINT_FILE)
     except Exception as e:
         logger.warning(f"保存检查点失败: {e}")
 
 
 # =============================================================================
-# 异步爬取核心
+# 批量刷盘
 # =============================================================================
 
-async def crawl_player_data_async(
-    zh_id: str,
-    name: str,
-    pool: AsyncPlaywrightPool,
-    skip_existing: bool = True
+def flush_batch(storage, players: List, positions_data: List[tuple], trades_data: List[tuple], crawl_date: str) -> None:
+    """将一批选手数据原子写入数据库。"""
+    if not any([players, positions_data, trades_data]):
+        return
+    count_p = len(players)
+    count_ps = sum(len(p[1]) for p in positions_data) if positions_data else 0
+    count_tr = sum(len(t[1]) for t in trades_data) if trades_data else 0
+    storage.flush_all(players, positions_data, trades_data, crawl_date)
+    logger.debug(f"批量写入: {count_p}选手, {count_ps}持仓, {count_tr}调仓")
+
+
+# =============================================================================
+# 爬取单个选手
+# =============================================================================
+
+def crawl_player_data(
+    player: Dict[str, Any],
+    follow: bool = False,
 ) -> Tuple[str, str, Optional[Dict], List, List]:
-    """
-    异步爬取单个选手的所有数据（真正并行）
+    """爬取单个选手的详情、持仓、调仓数据（同步）。"""
+    zh_id = player.get('zh_id', '')
+    name = player.get('name', '')
 
-    Args:
-        zh_id: 选手ID
-        name: 选手名称
-        pool: 异步 Playwright 连接池
-        skip_existing: 是否跳过已存在的
+    # 随机小延迟，降低触发 WAF 限流（9081）的概率
+    time.sleep(random.uniform(0, 0.2))
 
-    Returns:
-        (zh_id, name, detail, positions, trades)
-    """
     try:
-        # 三个请求真正并行
-        detail, positions, trades = await asyncio.gather(
-            crawl_player_detail_async(zh_id, pool),
-            crawl_positions_async(zh_id, "", pool),
-            crawl_trades_async(zh_id, "", pool),
-            return_exceptions=True
-        )
+        # 持仓/调仓需要关注；先关注，详情里的统计（胜率/回撤）才能拿到
+        if follow:
+            spzh_client.follow_player(zh_id)
 
-        # 处理异常
-        if isinstance(detail, Exception):
-            logger.error(f"获取详情失败 {zh_id}: {detail}")
-            detail = None
-        if isinstance(positions, Exception):
-            logger.error(f"获取持仓失败 {zh_id}: {positions}")
-            positions = []
-        if isinstance(trades, Exception):
-            logger.error(f"获取调仓失败 {zh_id}: {trades}")
-            trades = []
+        detail = crawl_player_detail(zh_id, player)
+        if detail is None:
+            return zh_id, name, None, [], []
 
-        return (zh_id, name, detail, positions or [], trades or [])
-
+        positions = crawl_positions(zh_id)
+        trades = crawl_trades(zh_id)
+        return zh_id, name, detail, positions, trades
     except Exception as e:
         logger.error(f"爬取选手 {name}({zh_id}) 失败: {e}")
-        return (zh_id, name, None, [], [])
+        return zh_id, name, None, [], []
 
 
-async def crawl_all_data_async(
+def crawl_all_data(
     players: List[Dict[str, Any]],
     storage,
     max_workers: int = 20,
     skip_existing: bool = True,
-    checkpoint_interval: int = 50
-):
+    checkpoint_interval: Optional[int] = None,
+    follow: bool = False,
+) -> Tuple[int, int, int]:
     """
-    异步爬取所有选手数据
+    并发爬取所有选手数据。
 
-    Args:
-        players: 选手列表
-        storage: 存储实例
-        max_workers: 最大并发数
-        skip_existing: 是否跳过已存在的
-        checkpoint_interval: 检查点保存间隔
+    Returns:
+        (success_count, skip_count, fail_count)
     """
-    # 加载检查点
+    if checkpoint_interval is None:
+        checkpoint_interval = CHECKPOINT_INTERVAL
+
     checkpoint = load_checkpoint()
-    completed_ids = set(checkpoint.get('completed_ids', []))
+    completed_ids: Set[str] = set(checkpoint.get('completed_ids', []))
     start_time = checkpoint.get('start_time') or time.time()
-
-    # 本次爬取日期
     crawl_date = date.today().isoformat()
 
-    logger.info(f"检查点: 已完成 {len(completed_ids)} 个选手")
-    logger.info(f"本次爬取日期: {crawl_date}")
+    logger.info(f"检查点: 已完成 {len(completed_ids)} 个选手 | 本次爬取日期: {crawl_date}")
 
-    # 创建连接池
-    pool = AsyncPlaywrightPool(pool_size=max_workers)
-    await pool.initialize()
+    # 缓冲区
+    pending_players: List = []
+    pending_positions: List[tuple] = []
+    pending_trades: List[tuple] = []
 
-    # 批量数据缓冲区
-    pending_players = []
-    pending_positions = []
-    pending_trades = []
+    success = skip = failed = 0
+    total = len(players)
 
-    def _flush_batch(storage, players_buf, positions_buf, trades_buf, crawl_date):
-        """批量保存数据"""
-        if players_buf:
-            storage.save_players_batch(players_buf)
-            logger.debug(f"批量保存 {len(players_buf)} 个选手")
-        if positions_buf:
-            storage.save_positions_batch(positions_buf, crawl_date)
-            logger.debug(f"批量保存 {len(positions_buf)} 条持仓记录")
-        if trades_buf:
-            storage.save_trades_batch(trades_buf, crawl_date)
-            logger.debug(f"批量保存 {len(trades_buf)} 条调仓记录")
+    def run_one(p: Dict[str, Any]) -> Tuple:
+        zh_id = p.get('zh_id', '')
+        if INTERRUPTED.is_set() or (skip_existing and zh_id in completed_ids):
+            return zh_id, p.get('name', ''), None, [], []
+        return crawl_player_data(p, follow=follow)
 
     try:
-        # 信号处理
-        loop = asyncio.get_event_loop()
-        interrupted = False
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = [pool.submit(run_one, p) for p in players]
+            for i, future in enumerate(as_completed(futures), 1):
+                try:
+                    zh_id, name, detail, positions, trades = future.result()
+                except Exception as e:
+                    logger.error(f"任务异常: {e}")
+                    continue
 
-        def signal_handler():
-            nonlocal interrupted
-            logger.info("收到中断信号，正在保存检查点和数据...")
-            interrupted = True
-            # 保存剩余数据
-            _flush_batch(storage, pending_players, pending_positions, pending_trades, crawl_date)
-            checkpoint['completed_ids'] = list(completed_ids)
-            checkpoint['start_time'] = start_time
-            save_checkpoint(checkpoint)
+                if detail:
+                    success += 1
+                    completed_ids.add(zh_id)
+                    pending_players.append(detail)
+                    if positions:
+                        pending_positions.append((zh_id, positions))
+                    if trades:
+                        pending_trades.append((zh_id, trades))
+                    logger.info(f"  [+] [{i}/{total}] {name}({zh_id}): {len(positions)}持仓, {len(trades)}调仓")
+                else:
+                    if zh_id in completed_ids:
+                        skip += 1
+                    else:
+                        failed += 1
+                        logger.warning(f"  [x] [{i}/{total}] {name}({zh_id}): 获取失败")
 
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
-                loop.add_signal_handler(sig, signal_handler)
-            except NotImplementedError:
-                pass
-
-        # 创建信号量控制并发
-        semaphore = asyncio.Semaphore(max_workers)
-
-        async def crawl_with_semaphore(player: Dict[str, Any]) -> Tuple[str, str, Any, List, List]:
-            zh_id = player.get('zh_id')
-            name = player.get('name', '')
-
-            async with semaphore:
-                if interrupted or zh_id in completed_ids:
-                    # 已完成的跳过；调用方根据 detail/completed_ids 区分 skip vs fail
-                    return (zh_id, name, None, [], [])
-
-                return await crawl_player_data_async(zh_id, name, pool, skip_existing)
-
-        # 创建所有任务
-        tasks = [crawl_with_semaphore(p) for p in players]
-
-        # 异步执行
-        success_count = 0
-        fail_count = 0
-        skip_count = 0
-
-        for i, coro in enumerate(asyncio.as_completed(tasks), 1):
-            result = await coro
-            zh_id, name, detail, positions, trades = result
-
-            if detail:
-                success_count += 1
-                completed_ids.add(zh_id)
-                pending_players.append(detail)
-                if positions:
-                    pending_positions.append((zh_id, positions))
-                if trades:
-                    pending_trades.append((zh_id, trades))
-                logger.info(f"  ✓ [{i}/{len(players)}] {name}({zh_id}): {len(positions)}持仓, {len(trades)}调仓")
-
-                # 批量保存
-                if len(pending_players) >= BATCH_SIZE:
-                    _flush_batch(storage, pending_players, pending_positions, pending_trades, crawl_date)
+                # 满批或到检查点 → 刷盘
+                if len(pending_players) >= BATCH_SIZE or i % checkpoint_interval == 0:
+                    flush_batch(storage, pending_players, pending_positions, pending_trades, crawl_date)
                     pending_players.clear()
                     pending_positions.clear()
                     pending_trades.clear()
-            else:
-                if zh_id in completed_ids:
-                    skip_count += 1
-                else:
-                    fail_count += 1
-                    logger.warning(f"  ✗ [{i}/{len(players)}] {name}({zh_id}): 获取失败")
 
-            # 保存检查点
-            if i % checkpoint_interval == 0:
-                _flush_batch(storage, pending_players, pending_positions, pending_trades, crawl_date)
-                pending_players.clear()
-                pending_positions.clear()
-                pending_trades.clear()
-                checkpoint['completed_ids'] = list(completed_ids)
-                checkpoint['start_time'] = start_time
-                save_checkpoint(checkpoint)
-                logger.info(f"  [检查点已保存] 进度: {i}/{len(players)}")
+                if i % checkpoint_interval == 0:
+                    checkpoint['completed_ids'] = list(completed_ids)
+                    checkpoint['start_time'] = start_time
+                    save_checkpoint(checkpoint)
+                    logger.info(f"  [检查点] 进度 {i}/{total}")
 
-            if interrupted:
-                logger.info("爬取被中断，已保存数据")
-                break
-
-        # 最终批量保存
-        _flush_batch(storage, pending_players, pending_positions, pending_trades, crawl_date)
-
-        # 最终检查点
+                if INTERRUPTED.is_set():
+                    logger.info("爬取中断")
+                    break
+    finally:
+        # 最终刷盘
+        flush_batch(storage, pending_players, pending_positions, pending_trades, crawl_date)
         checkpoint['completed_ids'] = list(completed_ids)
         checkpoint['start_time'] = start_time
         save_checkpoint(checkpoint)
 
-        logger.info("\n" + "=" * 60)
-        logger.info(f"数据爬取完成! 成功: {success_count}, 跳过: {skip_count}, 失败: {fail_count}")
-        logger.info("=" * 60)
-
-        return success_count, skip_count, fail_count
-
-    finally:
-        await pool.close()
+    logger.info("\n" + "=" * 60)
+    logger.info(f"完成! 成功: {success}, 跳过: {skip}, 失败: {failed}")
+    logger.info("=" * 60)
+    return success, skip, failed
 
 
 # =============================================================================
-# 主入口
+# 命令行入口
 # =============================================================================
 
 def main():
-    """主函数"""
     import argparse
 
-    # 先检查是否有--analyze
+    # --analyze 跳转到分析模式
     if '--analyze' in sys.argv:
         from src.analysis.position_analyzer import analyze_positions
         sys.argv = [a for a in sys.argv if a != '--analyze']
@@ -290,57 +225,50 @@ def main():
 
     parser = argparse.ArgumentParser(description='东方财富实盘选手爬虫')
     parser.add_argument('--test', action='store_true', help='测试模式(只处理10个选手)')
-    parser.add_argument('--limit', type=int, default=500, help='每榜单爬取数量(default: 500)')
-    parser.add_argument('--workers', type=int, default=20, help='并发数(default: 20)')
-    parser.add_argument('--no-skip', action='store_true', help='不跳过已存在的文件')
+    parser.add_argument('--limit', type=int, default=DEFAULT_LIMIT, help=f'每榜单爬取数量 (default: {DEFAULT_LIMIT})')
+    parser.add_argument('--workers', type=int, default=DEFAULT_WORKERS, help=f'并发数 (default: {DEFAULT_WORKERS})')
+    parser.add_argument('--no-skip', action='store_true', help='不跳过已存在的选手数据')
     parser.add_argument('--checkpoint-reset', action='store_true', help='重置检查点')
+    parser.add_argument('--follow', action='store_true', help='自动关注选手（持仓/调仓可见的前提）')
     args = parser.parse_args()
 
-    skip_existing = not args.no_skip
-
-    # 重置检查点
     if args.checkpoint_reset and CHECKPOINT_FILE.exists():
         CHECKPOINT_FILE.unlink()
         logger.info("检查点已重置")
 
-    # 确定存储
     storage = get_storage()
 
     logger.info("=" * 60)
-    logger.info(f"东方财富实盘选手爬虫")
-    logger.info(f"每榜单: {args.limit}名, 并发数: {args.workers}, 批量大小: {BATCH_SIZE}")
-    logger.info(f"存储模式: SQLite")
+    logger.info(f"东方财富实盘选手爬虫 | 每榜单: {args.limit}名 | 并发: {args.workers}")
     logger.info("=" * 60)
 
     # Step 1: 获取选手列表
     logger.info("\n[Step 1] 获取选手列表...")
-    player_list_spider = PlayerListSpider()
-    players = player_list_spider.fetch_player_list(args.limit)
-
+    players = PlayerListSpider().fetch_player_list(args.limit)
     if not players:
         logger.warning("未获取到选手列表")
         return
-
-    logger.info(f"共获取 {len(players)} 个选手 (去重后)")
+    logger.info(f"共 {len(players)} 个选手 (去重后)")
 
     if args.test:
         players = players[:10]
-        logger.info(f"测试模式: 只处理前 {len(players)} 个选手")
+        logger.info(f"测试模式: 只处理前 10 个")
 
-    # Step 2: 异步爬取
-    logger.info(f"\n[Step 2] 异步获取选手数据 (并发数={args.workers}, 跳过已存在={skip_existing})...")
-
+    # Step 2: 并发爬取
+    logger.info(f"\n[Step 2] 并发爬取 (并发={args.workers}, 跳过已存在={not args.no_skip}, 自动关注={args.follow})...")
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
     try:
-        asyncio.run(crawl_all_data_async(
-            players,
-            storage,
+        crawl_all_data(
+            players, storage,
             max_workers=args.workers,
-            skip_existing=skip_existing
-        ))
+            skip_existing=not args.no_skip,
+            follow=args.follow,
+        )
     except KeyboardInterrupt:
-        logger.info("爬取被用户中断")
+        logger.info("用户中断")
     except Exception as e:
-        logger.exception(f"爬取过程出现未处理异常: {e}")
+        logger.exception(f"未处理异常: {e}")
 
 
 if __name__ == "__main__":

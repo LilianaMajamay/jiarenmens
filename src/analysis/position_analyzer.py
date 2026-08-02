@@ -10,28 +10,17 @@ import json
 from pathlib import Path
 from typing import List, Dict, Any
 
-from src.storage.sqlite_storage import SQLiteStorage
 from src.storage.storage_factory import get_storage
 from src.utils.logger import setup_logger
 
 logger = setup_logger()
-
-_default_storage = None
-
-
-def _get_default_storage():
-    """获取默认存储"""
-    global _default_storage
-    if _default_storage is None:
-        _default_storage = get_storage()
-    return _default_storage
 
 
 class PositionAnalyzer:
     """持仓分析器"""
 
     def __init__(self, storage=None):
-        self.storage = storage or _get_default_storage()
+        self.storage = storage or get_storage()
 
     def get_all_positions(self, crawl_date: str | None = None) -> List[Dict[str, Any]]:
         """获取所有选手的持仓数据"""

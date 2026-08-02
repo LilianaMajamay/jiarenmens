@@ -73,9 +73,14 @@ class AsyncPlaywrightPool:
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
 
     // align languages with locale
-    Object.defineProperty(navigator, 'languages', {
-        get: () => ['zh-CN', 'zh', 'en']
-    });
+    Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
+
+    // iPhone 特征伪造
+    Object.defineProperty(navigator, 'platform', { get: () => 'iPhone' });
+    Object.defineProperty(navigator, 'vendor', { get: () => 'Apple Computer, Inc.' });
+    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 4 });
+    Object.defineProperty(navigator, 'deviceMemory', { get: () => 4 });
+    Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 5 });
 
     // patch permissions.query for notifications
     const __origQuery = window.navigator.permissions && window.navigator.permissions.query;
@@ -87,22 +92,49 @@ class AsyncPlaywrightPool:
         );
     }
 
-    // 伪造 EMRead webview 桥接对象，避免站点判定"非 APP"弹 confirm
+    // 伪造 EMRead webview 桥接对象
+    // 站点 JS 检查桥接方法来判定是否在 APP 内，返回 '' 或 '{}'（不含 uid）
+    // 会被认为未登录，弹"前往APP"阻断。必须返回含 uid 的模拟登录响应。
+    // 注意：站点可能通过属性名直接调用（如 emh5.emH5GetLoginStatus(json)），
+    // 而非 emh5.exc(name, json)，所以 stub 必须对所有调用返回含 uid 的响应。
     function __mkBridge() {
-        const noop = function() {};
-        const stub = function() { return ''; };
+        var mockLogin = JSON.stringify({
+            result: '0',
+            data: { uid: 'auto_crawler_001', nickname: 'DataCollector' }
+        });
+        var stub = function() { return mockLogin; };
         return new Proxy({}, {
-            get: (t, k) => {
+            get: function(t, k) {
                 if (k === 'toJSON' || k === Symbol.toPrimitive) return undefined;
-                return t[k] || stub;
+                return typeof t[k] !== 'undefined' ? t[k] : stub;
             },
-            set: (t, k, v) => { t[k] = v; return true; }
+            set: function(t, k, v) { t[k] = v; return true; }
         });
     }
     if (!window.emh5) window.emh5 = __mkBridge();
     if (!window.EMProjJs) window.EMProjJs = __mkBridge();
     if (!window.EMRead) window.EMRead = __mkBridge();
     if (!window.emjs) window.emjs = __mkBridge();
+
+    // 预置 emconfig（站点 JS 依赖此配置加载 API 路径）
+    if (!window.emconfig) {
+        window.emconfig = {
+            pkgName: 'app_group_page',
+            pkgVersion: '1.0.0',
+            buildTime: 1776934691271,
+            buildDate: '2026/4/23 16:58:11',
+            isBuild: true,
+            default: {
+                api: {
+                    yuantao: 'https://emzuhelist.eastmoney.com',
+                    api001: 'https://emdcspzhapi.dfcfs.cn/',
+                    api003: 'https://emstockdiag.eastmoney.com/',
+                    searchApi: 'https://searchapi.eastmoney.com/',
+                    pushApi: 'https://push2.eastmoney.com'
+                }
+            }
+        };
+    }
     """
 
     async def _create_context(self) -> BrowserContext:

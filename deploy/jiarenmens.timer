@@ -1,0 +1,27 @@
+# ═══════════════════════════════════════════════
+# systemd timer — 每天 9:30 和 15:00 运行爬虫
+# ═══════════════════════════════════════════════
+# 配合 jiarenmens.service 使用
+#
+# 安装:
+#   sudo cp deploy/jiarenmens.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable jiarenmens.timer
+#   sudo systemctl start jiarenmens.timer
+# ═══════════════════════════════════════════════
+
+[Unit]
+Description=定时运行东方财富实盘选手爬虫
+Requires=jiarenmens.service
+
+[Timer]
+# 交易日：9:30 开盘前跑一次，15:00 收盘后跑一次
+OnCalendar=Mon..Fri 09:30:00
+OnCalendar=Mon..Fri 15:00:00
+# 防止因断电等错过执行
+Persistent=true
+# 随机延迟 0-5 分钟，避免整点集中请求
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

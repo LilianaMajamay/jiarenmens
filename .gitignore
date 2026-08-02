@@ -44,3 +44,12 @@ logs/
 # Data (local storage)
 data/
 *.db
+
+# Environment
+.env
+
+# Deployment
+venv/
+
+# Docker
+.docker/

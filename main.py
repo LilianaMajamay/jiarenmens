@@ -222,7 +222,8 @@ def main():
     parser.add_argument('--workers', type=int, default=DEFAULT_WORKERS, help=f'并发数 (default: {DEFAULT_WORKERS})')
     parser.add_argument('--no-skip', action='store_true', help='不跳过已存在的选手数据')
     parser.add_argument('--checkpoint-reset', action='store_true', help='重置检查点')
-    parser.add_argument('--follow', action='store_true', help='自动关注选手（持仓/调仓可见的前提）')
+    parser.add_argument('--follow', action='store_true',
+                        help='自动关注选手（持仓/调仓可见的前提；注意自选组合有上限，建议分批）')
     parser.add_argument('--analyze', action='store_true', help='运行持仓分析')
     parser.add_argument('--board', type=str, default=None,
                         help='分析指定榜单: 总榜/年榜/月榜/周榜/日榜 (配合 --analyze)')
